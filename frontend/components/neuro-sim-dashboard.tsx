@@ -10,7 +10,8 @@ import {
   PointElement,
   Tooltip,
 } from "chart.js";
-import { Canvas, useFrame } from "@react-three/fiber";
+import { OrbitControls } from "@react-three/drei";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import {
   startTransition,
   useDeferredValue,
@@ -42,7 +43,7 @@ ChartJS.register(
 const WORLD_HALF = 400;
 const MAX_RENDERED_AGENTS = 50_000;
 const MAX_RENDERED_POINTS = 5_000;
-const LIVE_SERIES_LIMIT = 120;
+const LIVE_SERIES_LIMIT = 160;
 
 type OverlayStats = {
   generation: number;
@@ -69,6 +70,12 @@ type ControlForm = {
   sessionName: string;
 };
 
+type PanelState = {
+  controls: boolean;
+  analytics: boolean;
+  sessions: boolean;
+};
+
 export function NeuroSimDashboard() {
   const latestFrameRef = useRef<BinaryFrame | null>(null);
   const frameRevisionRef = useRef(0);
@@ -91,8 +98,15 @@ export function NeuroSimDashboard() {
     "connecting",
   );
   const [messageCount, setMessageCount] = useState(0);
-  const [actionMessage, setActionMessage] = useState("Live session initialized.");
+  const [actionMessage, setActionMessage] = useState("Use the controls panel to tune the run.");
   const [isBusy, setIsBusy] = useState(false);
+  const [analyticsMode, setAnalyticsMode] = useState<"live" | "generations">("live");
+  const [cameraResetVersion, setCameraResetVersion] = useState(0);
+  const [panels, setPanels] = useState<PanelState>({
+    controls: true,
+    analytics: true,
+    sessions: true,
+  });
   const [form, setForm] = useState<ControlForm>({
     mutationSeverity: 12,
     tickRate: 30,
@@ -141,7 +155,7 @@ export function NeuroSimDashboard() {
       const nextRecordings = (await response.json()) as RecordingSummary[];
       startTransition(() => setRecordings(nextRecordings));
     } catch {
-      setActionMessage("Could not refresh saved sessions.");
+      // Keep the previous list instead of spamming status copy.
     }
   });
 
@@ -152,18 +166,16 @@ export function NeuroSimDashboard() {
     uiUpdateCounterRef.current += 1;
 
     if (uiUpdateCounterRef.current % 4 === 0) {
-      const nextStats: OverlayStats = {
-        generation: parsed.generation,
-        tick: parsed.tick,
-        agentCount: parsed.agentCount,
-        topFitness: parsed.topFitness,
-        averageComplexity: parsed.averageComplexity,
-        averageLifespan: parsed.averageLifespan,
-        halted: parsed.halted,
-      };
-
       startTransition(() => {
-        setOverlayStats(nextStats);
+        setOverlayStats({
+          generation: parsed.generation,
+          tick: parsed.tick,
+          agentCount: parsed.agentCount,
+          topFitness: parsed.topFitness,
+          averageComplexity: parsed.averageComplexity,
+          averageLifespan: parsed.averageLifespan,
+          halted: parsed.halted,
+        });
         setMessageCount((value) => value + 4);
         setLiveSeries((current) => {
           const next = [
@@ -229,7 +241,7 @@ export function NeuroSimDashboard() {
       }
       socket?.close();
     };
-  }, [handleBinaryFrame]);
+  }, []);
 
   useEffect(() => {
     fetchStatus();
@@ -240,7 +252,7 @@ export function NeuroSimDashboard() {
       window.clearInterval(statusInterval);
       window.clearInterval(recordingInterval);
     };
-  }, [fetchRecordings, fetchStatus]);
+  }, []);
 
   const applyConfig = useEffectEvent(async () => {
     const fallbackConfig: ControlConfig = status?.config ?? {
@@ -276,7 +288,7 @@ export function NeuroSimDashboard() {
       }
 
       await fetchStatus();
-      setActionMessage("Simulation parameters updated.");
+      setActionMessage("Config applied to the running simulation.");
     } catch {
       setActionMessage("Config update failed.");
     } finally {
@@ -306,7 +318,7 @@ export function NeuroSimDashboard() {
       const saved = (await response.json()) as RecordingSummary;
       await fetchRecordings();
       await fetchStatus();
-      setActionMessage(`Saved ${saved.name}.`);
+      setActionMessage(`Saved session "${saved.name}".`);
     } catch {
       setActionMessage("Could not save the current session.");
     } finally {
@@ -343,7 +355,7 @@ export function NeuroSimDashboard() {
 
   const triggerGodMode = useEffectEvent(async () => {
     setIsBusy(true);
-    setActionMessage("Forcing a bottleneck...");
+    setActionMessage("Forcing a population bottleneck...");
 
     try {
       const response = await fetch(`${resolveApiBase()}/api/god-mode`, {
@@ -368,18 +380,18 @@ export function NeuroSimDashboard() {
       {
         label: "Alive",
         data: liveSeries.map((point) => point.alive),
-        borderColor: "#ffffff",
+        borderColor: "#fafafa",
         borderWidth: 2,
         pointRadius: 0,
-        tension: 0.15,
+        tension: 0.16,
       },
       {
         label: "Top Fitness",
         data: liveSeries.map((point) => point.topFitness),
-        borderColor: "#9ca3af",
+        borderColor: "#a3a3a3",
         borderWidth: 2,
         pointRadius: 0,
-        tension: 0.15,
+        tension: 0.16,
       },
       {
         label: "Complexity",
@@ -387,15 +399,49 @@ export function NeuroSimDashboard() {
         borderColor: "#525252",
         borderWidth: 2,
         pointRadius: 0,
-        tension: 0.15,
+        tension: 0.16,
       },
     ],
   };
 
-  const liveChartOptions: ChartOptions<"line"> = {
+  const generationChartData = {
+    labels: deferredHistory.map((point) => `G${point.generation}`),
+    datasets: [
+      {
+        label: "Average Lifespan",
+        data: deferredHistory.map((point) => point.average_lifespan),
+        borderColor: "#fafafa",
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.18,
+      },
+      {
+        label: "Max Fitness",
+        data: deferredHistory.map((point) => point.max_fitness),
+        borderColor: "#a3a3a3",
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.18,
+      },
+      {
+        label: "Brain Complexity",
+        data: deferredHistory.map((point) => point.average_brain_complexity),
+        borderColor: "#525252",
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.18,
+      },
+    ],
+  };
+
+  const chartOptions: ChartOptions<"line"> = {
     responsive: true,
     maintainAspectRatio: false,
     animation: false,
+    interaction: {
+      mode: "index",
+      intersect: false,
+    },
     plugins: {
       legend: {
         labels: {
@@ -403,7 +449,7 @@ export function NeuroSimDashboard() {
         },
       },
       tooltip: {
-        backgroundColor: "#111111",
+        backgroundColor: "#0a0a0a",
         titleColor: "#fafafa",
         bodyColor: "#d4d4d8",
       },
@@ -412,10 +458,10 @@ export function NeuroSimDashboard() {
       x: {
         ticks: {
           color: "#737373",
-          maxTicksLimit: 6,
+          maxTicksLimit: 8,
         },
         grid: {
-          color: "rgba(82, 82, 82, 0.25)",
+          color: "rgba(64, 64, 64, 0.4)",
         },
       },
       y: {
@@ -423,10 +469,14 @@ export function NeuroSimDashboard() {
           color: "#737373",
         },
         grid: {
-          color: "rgba(82, 82, 82, 0.25)",
+          color: "rgba(64, 64, 64, 0.4)",
         },
       },
     },
+  };
+
+  const togglePanel = (panel: keyof PanelState) => {
+    setPanels((current) => ({ ...current, [panel]: !current[panel] }));
   };
 
   return (
@@ -436,7 +486,27 @@ export function NeuroSimDashboard() {
           frameRef={latestFrameRef}
           revisionRef={frameRevisionRef}
           halted={overlayStats.halted}
+          resetVersion={cameraResetVersion}
         />
+
+        <Toolbar className="left-1/2 top-4 -translate-x-1/2">
+          <ToolbarButton
+            label={panels.controls ? "Hide Controls" : "Show Controls"}
+            onClick={() => togglePanel("controls")}
+          />
+          <ToolbarButton
+            label={panels.analytics ? "Hide Analytics" : "Show Analytics"}
+            onClick={() => togglePanel("analytics")}
+          />
+          <ToolbarButton
+            label={panels.sessions ? "Hide Sessions" : "Show Sessions"}
+            onClick={() => togglePanel("sessions")}
+          />
+          <ToolbarButton
+            label="Reset View"
+            onClick={() => setCameraResetVersion((value) => value + 1)}
+          />
+        </Toolbar>
 
         <OverlayPanel className="left-4 top-4 w-[320px]">
           <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
@@ -455,138 +525,216 @@ export function NeuroSimDashboard() {
             <span>{status?.session.replaying ? "replay mode" : "live mode"}</span>
           </div>
           <p className="mt-3 text-sm text-neutral-400">{actionMessage}</p>
+          <p className="mt-3 text-xs text-neutral-600">
+            Drag to orbit. Right-drag to pan. Mouse wheel to zoom.
+          </p>
         </OverlayPanel>
 
-        <OverlayPanel className="right-4 top-4 w-[360px]">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
-                Configuration
-              </p>
-              <h2 className="mt-2 text-xl font-medium text-white">Run Controls</h2>
+        {panels.controls ? (
+          <OverlayPanel className="right-4 top-4 w-[380px]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
+                  Configuration
+                </p>
+                <h2 className="mt-2 text-2xl font-medium text-white">Run Controls</h2>
+              </div>
+              <div className="rounded border border-neutral-800 px-3 py-2 text-[11px] uppercase tracking-[0.24em] text-neutral-400">
+                Seed {status?.session.seed ?? 7}
+              </div>
             </div>
-            <span className="rounded border border-neutral-800 px-2 py-1 text-[11px] uppercase tracking-[0.24em] text-neutral-400">
-              Seed {status?.session.seed ?? 7}
-            </span>
-          </div>
 
-          <div className="mt-5 space-y-4">
-            <RangeField
-              label="Mutation Severity"
-              value={form.mutationSeverity}
-              min={0}
-              max={100}
-              unit="%"
-              onChange={(value) => setForm((current) => ({ ...current, mutationSeverity: value }))}
-            />
-
-            <NumberField
-              label="Tick Rate"
-              value={form.tickRate}
-              min={1}
-              max={120}
-              onChange={(value) => setForm((current) => ({ ...current, tickRate: value }))}
-            />
-            <NumberField
-              label="Population"
-              value={form.targetPopulation}
-              min={250}
-              max={50000}
-              step={100}
-              onChange={(value) => setForm((current) => ({ ...current, targetPopulation: value }))}
-            />
-            <NumberField
-              label="Generations"
-              value={form.maxGenerations}
-              min={1}
-              max={5000}
-              onChange={(value) => setForm((current) => ({ ...current, maxGenerations: value }))}
-            />
-            <input
-              type="text"
-              value={form.sessionName}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, sessionName: event.target.value }))
-              }
-              placeholder="Session name for offline save"
-              className="w-full rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600"
-            />
-          </div>
-
-          <div className="mt-5 grid grid-cols-2 gap-3">
-            <ActionButton label="Apply" onClick={applyConfig} disabled={isBusy} />
-            <ActionButton label="God Mode" onClick={triggerGodMode} disabled={isBusy} />
-            <ActionButton label="Save Session" onClick={saveRecording} disabled={isBusy} />
-            <ActionButton
-              label={status?.session.recording_dirty ? "Unsaved" : "Saved"}
-              onClick={saveRecording}
-              disabled={isBusy || !status?.session.recording_dirty}
-            />
-          </div>
-        </OverlayPanel>
-
-        <OverlayPanel className="bottom-4 right-4 h-[300px] w-[420px]">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
-                Live Telemetry
-              </p>
-              <h2 className="mt-2 text-xl font-medium text-white">Running Graph</h2>
+            <div className="mt-5 max-h-[calc(100vh-12rem)] space-y-4 overflow-y-auto pr-1">
+              <RangeField
+                label="Mutation Severity"
+                value={form.mutationSeverity}
+                min={0}
+                max={100}
+                unit="%"
+                onChange={(value) =>
+                  setForm((current) => ({ ...current, mutationSeverity: value }))
+                }
+              />
+              <NumberField
+                label="Tick Rate"
+                value={form.tickRate}
+                min={1}
+                max={120}
+                onChange={(value) => setForm((current) => ({ ...current, tickRate: value }))}
+              />
+              <NumberField
+                label="Population"
+                value={form.targetPopulation}
+                min={250}
+                max={50000}
+                step={100}
+                onChange={(value) =>
+                  setForm((current) => ({ ...current, targetPopulation: value }))
+                }
+              />
+              <NumberField
+                label="Generations"
+                value={form.maxGenerations}
+                min={1}
+                max={5000}
+                onChange={(value) =>
+                  setForm((current) => ({ ...current, maxGenerations: value }))
+                }
+              />
+              <label className="block">
+                <div className="mb-2 text-sm text-neutral-300">Offline Session Name</div>
+                <input
+                  type="text"
+                  value={form.sessionName}
+                  onChange={(event) =>
+                    setForm((current) => ({ ...current, sessionName: event.target.value }))
+                  }
+                  placeholder="e.g. bottleneck-test-01"
+                  className="w-full rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600"
+                />
+              </label>
+              <div className="rounded border border-neutral-800 bg-neutral-950 px-4 py-3 text-sm text-neutral-400">
+                Apply changes to the running simulation. Save Session stores enough information to
+                reconstruct this run offline later.
+              </div>
             </div>
-            <div className="text-right text-xs text-neutral-500">
-              <div>Avg lifespan {overlayStats.averageLifespan.toFixed(1)}</div>
-              <div>History {deferredHistory.length} generations</div>
-            </div>
-          </div>
-          <div className="mt-4 h-[205px]">
-            <Line data={liveChartData} options={liveChartOptions} />
-          </div>
-        </OverlayPanel>
 
-        <OverlayPanel className="bottom-4 left-4 w-[420px]">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
-                Offline Replay
-              </p>
-              <h2 className="mt-2 text-xl font-medium text-white">Saved Sessions</h2>
+            <div className="mt-5 grid grid-cols-2 gap-3">
+              <ActionButton label="Apply Changes" onClick={applyConfig} disabled={isBusy} />
+              <ActionButton label="God Mode" onClick={triggerGodMode} disabled={isBusy} />
+              <ActionButton label="Save Session" onClick={saveRecording} disabled={isBusy} />
+              <ActionButton
+                label={status?.session.recording_dirty ? "Unsaved Changes" : "Session Saved"}
+                onClick={saveRecording}
+                disabled={isBusy || !status?.session.recording_dirty}
+              />
             </div>
-            <span className="text-xs text-neutral-500">
-              {recordings.length.toLocaleString()} stored
-            </span>
-          </div>
+          </OverlayPanel>
+        ) : null}
 
-          <div className="mt-4 max-h-[240px] space-y-2 overflow-auto pr-1">
-            {recordings.length === 0 ? (
-              <p className="text-sm text-neutral-500">
-                No saved sessions yet. Save the current run to replay it later.
-              </p>
-            ) : (
-              recordings.map((recording) => (
-                <button
-                  key={recording.id}
-                  type="button"
-                  onClick={() => replayRecording(recording.id)}
-                  className="w-full rounded border border-neutral-800 bg-neutral-950 px-3 py-3 text-left transition hover:border-neutral-600"
-                  disabled={isBusy}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium text-white">{recording.name}</div>
-                      <div className="mt-1 text-xs text-neutral-500">
-                        Gen {recording.final_generation} / Tick {recording.final_tick}
+        {panels.analytics ? (
+          <OverlayPanel className="bottom-4 right-4 h-[420px] w-[760px] max-w-[calc(100vw-2rem)]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
+                  Analytics
+                </p>
+                <h2 className="mt-2 text-2xl font-medium text-white">Explore The Run</h2>
+              </div>
+              <div className="flex gap-2">
+                <ToolbarButton
+                  label="Live Graph"
+                  onClick={() => setAnalyticsMode("live")}
+                  active={analyticsMode === "live"}
+                />
+                <ToolbarButton
+                  label="Generation History"
+                  onClick={() => setAnalyticsMode("generations")}
+                  active={analyticsMode === "generations"}
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 grid h-[320px] gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
+              <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
+                <Line
+                  data={analyticsMode === "live" ? liveChartData : generationChartData}
+                  options={chartOptions}
+                />
+              </div>
+              <div className="rounded border border-neutral-800 bg-neutral-950 p-4">
+                {analyticsMode === "live" ? (
+                  <>
+                    <div className="text-sm text-white">Live Window</div>
+                    <div className="mt-3 space-y-3 text-sm text-neutral-400">
+                      <MetricRow
+                        label="Current alive"
+                        value={overlayStats.agentCount.toLocaleString()}
+                      />
+                      <MetricRow
+                        label="Top fitness"
+                        value={overlayStats.topFitness.toFixed(1)}
+                      />
+                      <MetricRow
+                        label="Brain complexity"
+                        value={overlayStats.averageComplexity.toFixed(1)}
+                      />
+                      <MetricRow
+                        label="Avg lifespan"
+                        value={overlayStats.averageLifespan.toFixed(1)}
+                      />
+                      <MetricRow label="Ticks tracked" value={liveSeries.length.toString()} />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-sm text-white">Recent Generations</div>
+                    <div className="mt-3 max-h-[250px] space-y-2 overflow-auto pr-1">
+                      {deferredHistory.slice(-10).reverse().map((entry) => (
+                        <div
+                          key={entry.generation}
+                          className="rounded border border-neutral-800 px-3 py-2 text-sm text-neutral-400"
+                        >
+                          <div className="text-white">Generation {entry.generation}</div>
+                          <div className="mt-1 text-xs">
+                            Lifespan {entry.average_lifespan.toFixed(1)} / Fitness{" "}
+                            {entry.max_fitness.toFixed(1)} / Complexity{" "}
+                            {entry.average_brain_complexity.toFixed(1)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </OverlayPanel>
+        ) : null}
+
+        {panels.sessions ? (
+          <OverlayPanel className="bottom-4 left-4 w-[440px] max-w-[calc(100vw-2rem)]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
+                  Offline Replay
+                </p>
+                <h2 className="mt-2 text-2xl font-medium text-white">Saved Sessions</h2>
+              </div>
+              <span className="text-sm text-neutral-500">{recordings.length} stored</span>
+            </div>
+
+            <div className="mt-4 max-h-[260px] space-y-2 overflow-auto pr-1">
+              {recordings.length === 0 ? (
+                <div className="rounded border border-neutral-800 bg-neutral-950 px-4 py-4 text-sm text-neutral-500">
+                  Save the current run, then replay it later from here.
+                </div>
+              ) : (
+                recordings.map((recording) => (
+                  <button
+                    key={recording.id}
+                    type="button"
+                    onClick={() => replayRecording(recording.id)}
+                    className="w-full rounded border border-neutral-800 bg-neutral-950 px-4 py-3 text-left transition hover:border-neutral-600"
+                    disabled={isBusy}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-white">{recording.name}</div>
+                        <div className="mt-1 text-xs text-neutral-500">
+                          Gen {recording.final_generation}, Tick {recording.final_tick}
+                        </div>
+                      </div>
+                      <div className="text-right text-xs text-neutral-500">
+                        <div>{recording.population_size.toLocaleString()} agents</div>
+                        <div>{new Date(recording.saved_at_ms).toLocaleString()}</div>
                       </div>
                     </div>
-                    <div className="text-right text-xs text-neutral-500">
-                      <div>{recording.population_size.toLocaleString()} agents</div>
-                      <div>{new Date(recording.saved_at_ms).toLocaleString()}</div>
-                    </div>
-                  </div>
-                </button>
-              ))
-            )}
-          </div>
-        </OverlayPanel>
+                  </button>
+                ))
+              )}
+            </div>
+          </OverlayPanel>
+        ) : null}
       </div>
     </main>
   );
@@ -596,24 +744,56 @@ function SimulationViewport({
   frameRef,
   revisionRef,
   halted,
+  resetVersion,
 }: {
   frameRef: MutableRefObject<BinaryFrame | null>;
   revisionRef: MutableRefObject<number>;
   halted: boolean;
+  resetVersion: number;
 }) {
   return (
     <Canvas camera={{ position: [0, 320, 320], fov: 48 }}>
       <color attach="background" args={["#0a0a0a"]} />
       <ambientLight intensity={0.55} />
       <directionalLight position={[80, 180, 90]} intensity={1.0} color="#ffffff" />
+      <SceneControls resetVersion={resetVersion} />
       <group rotation={[-0.95, 0, 0]}>
         <mesh position={[0, -4, 0]} rotation={[-Math.PI / 2, 0, 0]}>
           <planeGeometry args={[860, 860, 1, 1]} />
-          <meshStandardMaterial color={halted ? "#141414" : "#111111"} roughness={1} metalness={0} />
+          <meshStandardMaterial
+            color={halted ? "#141414" : "#111111"}
+            roughness={1}
+            metalness={0}
+          />
         </mesh>
         <ArenaInstancing frameRef={frameRef} revisionRef={revisionRef} />
       </group>
     </Canvas>
+  );
+}
+
+function SceneControls({ resetVersion }: { resetVersion: number }) {
+  const controlsRef = useRef<any>(null);
+  const { camera } = useThree();
+
+  useEffect(() => {
+    camera.position.set(0, 320, 320);
+    if (controlsRef.current) {
+      controlsRef.current.target.set(0, 0, 0);
+      controlsRef.current.update();
+    }
+  }, [camera, resetVersion]);
+
+  return (
+    <OrbitControls
+      ref={controlsRef}
+      enablePan
+      enableZoom
+      enableRotate
+      maxDistance={900}
+      minDistance={80}
+      target={[0, 0, 0]}
+    />
   );
 }
 
@@ -742,6 +922,46 @@ function ArenaInstancing({
   );
 }
 
+function Toolbar({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`absolute z-20 flex gap-2 rounded border border-neutral-800 bg-neutral-900/92 p-2 shadow-2xl backdrop-blur ${className ?? ""}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+function ToolbarButton({
+  label,
+  onClick,
+  active = false,
+}: {
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded border px-3 py-2 text-sm transition ${
+        active
+          ? "border-neutral-500 bg-neutral-700 text-white"
+          : "border-neutral-800 bg-neutral-950 text-neutral-300 hover:border-neutral-600"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
 function OverlayPanel({
   children,
   className,
@@ -854,6 +1074,15 @@ function ActionButton({
     >
       {label}
     </button>
+  );
+}
+
+function MetricRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span>{label}</span>
+      <span className="text-white">{value}</span>
+    </div>
   );
 }
 

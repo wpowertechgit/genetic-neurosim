@@ -60,7 +60,7 @@ async fn main() {
                 .allow_headers(Any),
         );
 
-    let address = SocketAddr::from(([127, 0, 0, 1], 8000));
+    let address = SocketAddr::from(([0, 0, 0, 0], 8000));
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .expect("failed to bind NeuroSim backend");
