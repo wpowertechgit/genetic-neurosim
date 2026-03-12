@@ -1,7 +1,10 @@
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
+    fs,
+    path::PathBuf,
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use parking_lot::RwLock;
@@ -27,6 +30,7 @@ const POISON_DAMAGE: f32 = 42.0;
 const COLLISION_RADIUS: f32 = 12.0;
 const HASH_CELL_SIZE: f32 = 32.0;
 const HISTORY_LIMIT: usize = 240;
+const RECORDINGS_DIR: &str = "recordings";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ControlConfig {
@@ -42,16 +46,16 @@ impl Default for ControlConfig {
     fn default() -> Self {
         Self {
             mutation_rate: 0.12,
-            population_size: 8_000,
-            max_generations: 250,
-            food_spawn_rate: 28,
-            energy_decay: 0.65,
+            population_size: 2_500,
+            max_generations: 80,
+            food_spawn_rate: 24,
+            energy_decay: 0.82,
             tick_rate: 30,
         }
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ConfigPatch {
     pub mutation_rate: Option<f32>,
     pub population_size: Option<usize>,
@@ -61,7 +65,7 @@ pub struct ConfigPatch {
     pub tick_rate: Option<u32>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct HistoryPoint {
     pub generation: u32,
     pub average_lifespan: f32,
@@ -88,12 +92,74 @@ pub struct StatusResponse {
     pub config: ControlConfig,
     pub metrics: StatusMetrics,
     pub history: Vec<HistoryPoint>,
+    pub session: SessionState,
 }
 
 #[derive(Clone, Serialize)]
 pub struct GodModeResponse {
     pub removed_agents: usize,
     pub alive_after: usize,
+}
+
+#[derive(Clone, Serialize)]
+pub struct SessionState {
+    pub seed: u64,
+    pub replaying: bool,
+    pub recording_dirty: bool,
+    pub active_recording: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SaveRecordingRequest {
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ReplayRecordingRequest {
+    pub recording_id: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RecordingSummary {
+    pub id: String,
+    pub name: String,
+    pub saved_at_ms: u64,
+    pub seed: u64,
+    pub final_generation: u32,
+    pub final_tick: u64,
+    pub population_size: usize,
+    pub max_generations: u32,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum RecordedAction {
+    ConfigPatch { patch: ConfigPatch },
+    GodMode,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct RecordedEvent {
+    tick: u64,
+    #[serde(flatten)]
+    action: RecordedAction,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct RecordingFile {
+    summary: RecordingSummary,
+    initial_config: ControlConfig,
+    final_config: ControlConfig,
+    history: Vec<HistoryPoint>,
+    events: Vec<RecordedEvent>,
+}
+
+#[derive(Clone)]
+struct ReplayState {
+    recording_id: String,
+    events: Vec<RecordedEvent>,
+    next_event_index: usize,
+    final_tick: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -947,6 +1013,8 @@ struct StepOutcome {
 
 pub struct Simulation {
     rng: SmallRng,
+    session_seed: u64,
+    initial_config: ControlConfig,
     config: ControlConfig,
     innovation: InnovationTracker,
     world: Environment,
@@ -959,6 +1027,9 @@ pub struct Simulation {
     top_fitness_ever: f32,
     latest_average_complexity: f32,
     latest_packet: Vec<u8>,
+    session_events: Vec<RecordedEvent>,
+    session_dirty: bool,
+    replay: Option<ReplayState>,
 }
 
 impl Simulation {
@@ -967,13 +1038,19 @@ impl Simulation {
     }
 
     pub fn new(config: ControlConfig) -> Self {
-        let mut rng = SmallRng::seed_from_u64(7);
+        Self::with_seed(config, 7)
+    }
+
+    fn with_seed(config: ControlConfig, seed: u64) -> Self {
+        let mut rng = SmallRng::seed_from_u64(seed);
         let mut innovation = InnovationTracker::new();
         let agents = AgentStorage::new(&mut rng, &mut innovation, config.population_size);
         let world = Environment::new(&mut rng, config.population_size);
 
         let mut simulation = Self {
             rng,
+            session_seed: seed,
+            initial_config: config.clone(),
             config,
             innovation,
             world,
@@ -986,6 +1063,9 @@ impl Simulation {
             top_fitness_ever: 0.0,
             latest_average_complexity: 0.0,
             latest_packet: Vec::new(),
+            session_events: Vec::new(),
+            session_dirty: true,
+            replay: None,
         };
         simulation.latest_average_complexity = simulation.average_brain_complexity();
         simulation.latest_packet = simulation.pack_current_frame();
@@ -993,6 +1073,8 @@ impl Simulation {
     }
 
     pub fn step(&mut self) -> Vec<u8> {
+        self.apply_replay_events();
+
         if self.halted {
             return self.pack_current_frame();
         }
@@ -1131,9 +1213,18 @@ impl Simulation {
 
         self.top_fitness_ever = self.top_fitness_ever.max(best_fitness);
         self.latest_average_complexity = self.average_brain_complexity();
+        if self.replay.is_none() {
+            self.session_dirty = true;
+        }
 
         if alive_count == 0 {
             self.advance_generation();
+        }
+
+        if let Some(replay) = &self.replay {
+            if self.tick >= replay.final_tick {
+                self.halted = true;
+            }
         }
 
         self.pack_current_frame()
@@ -1220,6 +1311,20 @@ impl Simulation {
     }
 
     pub fn apply_config_patch(&mut self, patch: ConfigPatch) {
+        self.apply_config_patch_internal(patch, true);
+    }
+
+    fn apply_config_patch_internal(&mut self, patch: ConfigPatch, record_event: bool) {
+        if record_event {
+            self.session_events.push(RecordedEvent {
+                tick: self.tick,
+                action: RecordedAction::ConfigPatch {
+                    patch: patch.clone(),
+                },
+            });
+            self.session_dirty = true;
+        }
+
         let original_population = self.config.population_size;
 
         if let Some(mutation_rate) = patch.mutation_rate {
@@ -1260,6 +1365,18 @@ impl Simulation {
     }
 
     pub fn kill_half_population(&mut self) -> GodModeResponse {
+        self.kill_half_population_internal(true)
+    }
+
+    fn kill_half_population_internal(&mut self, record_event: bool) -> GodModeResponse {
+        if record_event {
+            self.session_events.push(RecordedEvent {
+                tick: self.tick,
+                action: RecordedAction::GodMode,
+            });
+            self.session_dirty = true;
+        }
+
         let mut live_indices: Vec<usize> = self
             .agents
             .alive
@@ -1281,6 +1398,108 @@ impl Simulation {
         GodModeResponse {
             removed_agents: remove_count,
             alive_after,
+        }
+    }
+
+    pub fn save_recording(&mut self, name: Option<String>) -> Result<RecordingSummary, String> {
+        let saved_at_ms = now_unix_ms();
+        let id = format!("session-{saved_at_ms}");
+        let summary = RecordingSummary {
+            id: id.clone(),
+            name: name.unwrap_or_else(|| format!("Session {}", self.generation)),
+            saved_at_ms,
+            seed: self.session_seed,
+            final_generation: self.generation,
+            final_tick: self.tick,
+            population_size: self.config.population_size,
+            max_generations: self.config.max_generations,
+        };
+
+        let file = RecordingFile {
+            summary: summary.clone(),
+            initial_config: self.initial_config.clone(),
+            final_config: self.config.clone(),
+            history: self.history.clone(),
+            events: self.session_events.clone(),
+        };
+
+        let directory = recordings_dir();
+        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let path = directory.join(format!("{id}.json"));
+        let payload = serde_json::to_vec_pretty(&file).map_err(|error| error.to_string())?;
+        fs::write(path, payload).map_err(|error| error.to_string())?;
+        self.session_dirty = false;
+        self.replay = None;
+        Ok(summary)
+    }
+
+    pub fn list_recordings(&self) -> Result<Vec<RecordingSummary>, String> {
+        let directory = recordings_dir();
+        if !directory.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut summaries = Vec::new();
+        for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let payload = fs::read_to_string(path).map_err(|error| error.to_string())?;
+            let file: RecordingFile =
+                serde_json::from_str(&payload).map_err(|error| error.to_string())?;
+            summaries.push(file.summary);
+        }
+
+        summaries.sort_by(|left, right| right.saved_at_ms.cmp(&left.saved_at_ms));
+        Ok(summaries)
+    }
+
+    pub fn replay_recording(&mut self, recording_id: &str) -> Result<RecordingSummary, String> {
+        let file = load_recording(recording_id)?;
+        *self = Self::with_seed(file.initial_config.clone(), file.summary.seed);
+        self.initial_config = file.initial_config.clone();
+        self.session_seed = file.summary.seed;
+        self.session_events = file.events.clone();
+        self.session_dirty = false;
+        self.replay = Some(ReplayState {
+            recording_id: file.summary.id.clone(),
+            events: file.events,
+            next_event_index: 0,
+            final_tick: file.summary.final_tick,
+        });
+        self.config.max_generations = file.final_config.max_generations;
+        self.pack_current_frame();
+        Ok(file.summary)
+    }
+
+    fn apply_replay_events(&mut self) {
+        loop {
+            let next_event = self
+                .replay
+                .as_ref()
+                .and_then(|replay| replay.events.get(replay.next_event_index).cloned());
+
+            let Some(event) = next_event else {
+                break;
+            };
+            if event.tick > self.tick {
+                break;
+            }
+
+            match event.action {
+                RecordedAction::ConfigPatch { patch } => {
+                    self.apply_config_patch_internal(patch, false);
+                }
+                RecordedAction::GodMode => {
+                    let _ = self.kill_half_population_internal(false);
+                }
+            }
+
+            if let Some(replay) = &mut self.replay {
+                replay.next_event_index += 1;
+            }
         }
     }
 
@@ -1314,6 +1533,15 @@ impl Simulation {
                 average_brain_complexity: round2(self.latest_average_complexity),
             },
             history: self.history.clone(),
+            session: SessionState {
+                seed: self.session_seed,
+                replaying: self.replay.is_some(),
+                recording_dirty: self.session_dirty,
+                active_recording: self
+                    .replay
+                    .as_ref()
+                    .map(|replay| replay.recording_id.clone()),
+            },
         }
     }
 
@@ -1411,4 +1639,21 @@ fn fast_tanh(value: f32) -> f32 {
 
 fn round2(value: f32) -> f32 {
     (value * 100.0).round() / 100.0
+}
+
+fn recordings_dir() -> PathBuf {
+    PathBuf::from(RECORDINGS_DIR)
+}
+
+fn load_recording(recording_id: &str) -> Result<RecordingFile, String> {
+    let path = recordings_dir().join(format!("{recording_id}.json"));
+    let payload = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    serde_json::from_str(&payload).map_err(|error| error.to_string())
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }

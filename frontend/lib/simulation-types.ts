@@ -31,4 +31,21 @@ export type StatusResponse = {
   config: ControlConfig;
   metrics: StatusMetrics;
   history: HistoryPoint[];
+  session: {
+    seed: number;
+    replaying: boolean;
+    recording_dirty: boolean;
+    active_recording: string | null;
+  };
+};
+
+export type RecordingSummary = {
+  id: string;
+  name: string;
+  saved_at_ms: number;
+  seed: number;
+  final_generation: number;
+  final_tick: number;
+  population_size: number;
+  max_generations: number;
 };

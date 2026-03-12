@@ -4,14 +4,13 @@ import {
   CategoryScale,
   Chart as ChartJS,
   ChartOptions,
-  Filler,
   Legend,
   LineElement,
   LinearScale,
   PointElement,
   Tooltip,
 } from "chart.js";
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useFrame } from "@react-three/fiber";
 import {
   startTransition,
   useDeferredValue,
@@ -20,53 +19,98 @@ import {
   useRef,
   useState,
 } from "react";
+import type { MutableRefObject, ReactNode } from "react";
 import { Line } from "react-chartjs-2";
-import {
-  Color,
-  DynamicDrawUsage,
-  InstancedMesh,
-  Object3D,
-} from "three";
+import { Color, DynamicDrawUsage, InstancedMesh, Object3D } from "three";
 
 import { parseBinaryFrame, type BinaryFrame } from "../lib/binary-protocol";
-import type { ControlConfig, StatusResponse } from "../lib/simulation-types";
+import type {
+  ControlConfig,
+  RecordingSummary,
+  StatusResponse,
+} from "../lib/simulation-types";
 
-ChartJS.register(CategoryScale, Filler, Legend, LineElement, LinearScale, PointElement, Tooltip);
+ChartJS.register(
+  CategoryScale,
+  Legend,
+  LineElement,
+  LinearScale,
+  PointElement,
+  Tooltip,
+);
 
 const WORLD_HALF = 400;
 const MAX_RENDERED_AGENTS = 50_000;
 const MAX_RENDERED_POINTS = 5_000;
+const LIVE_SERIES_LIMIT = 120;
+
+type OverlayStats = {
+  generation: number;
+  tick: number;
+  agentCount: number;
+  topFitness: number;
+  averageComplexity: number;
+  averageLifespan: number;
+  halted: boolean;
+};
+
+type LivePoint = {
+  tick: number;
+  alive: number;
+  topFitness: number;
+  complexity: number;
+};
 
 type ControlForm = {
   mutationSeverity: number;
   tickRate: number;
   targetPopulation: number;
+  maxGenerations: number;
+  sessionName: string;
 };
 
 export function NeuroSimDashboard() {
-  const [frame, setFrame] = useState<BinaryFrame | null>(null);
+  const latestFrameRef = useRef<BinaryFrame | null>(null);
+  const frameRevisionRef = useRef(0);
+  const uiUpdateCounterRef = useRef(0);
+  const formSeededRef = useRef(false);
+
+  const [overlayStats, setOverlayStats] = useState<OverlayStats>({
+    generation: 1,
+    tick: 0,
+    agentCount: 0,
+    topFitness: 0,
+    averageComplexity: 0,
+    averageLifespan: 0,
+    halted: false,
+  });
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [recordings, setRecordings] = useState<RecordingSummary[]>([]);
+  const [liveSeries, setLiveSeries] = useState<LivePoint[]>([]);
   const [connectionState, setConnectionState] = useState<"connecting" | "live" | "offline">(
     "connecting",
   );
   const [messageCount, setMessageCount] = useState(0);
-  const [actionMessage, setActionMessage] = useState("Control plane idle.");
+  const [actionMessage, setActionMessage] = useState("Live session initialized.");
+  const [isBusy, setIsBusy] = useState(false);
   const [form, setForm] = useState<ControlForm>({
     mutationSeverity: 12,
     tickRate: 30,
-    targetPopulation: 8000,
+    targetPopulation: 2500,
+    maxGenerations: 80,
+    sessionName: "",
   });
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const formSeededRef = useRef(false);
+
   const deferredHistory = useDeferredValue(status?.history ?? []);
 
-  const handleBinaryFrame = useEffectEvent((payload: ArrayBuffer) => {
-    const parsed = parseBinaryFrame(payload);
-    startTransition(() => {
-      setFrame(parsed);
-      setMessageCount((value) => value + 1);
-      setConnectionState("live");
-    });
+  const syncFormFromConfig = useEffectEvent((config: ControlConfig) => {
+    setForm((current) => ({
+      ...current,
+      mutationSeverity: Math.round(config.mutation_rate * 100),
+      tickRate: config.tick_rate,
+      targetPopulation: config.population_size,
+      maxGenerations: config.max_generations,
+    }));
   });
 
   const fetchStatus = useEffectEvent(async () => {
@@ -75,19 +119,68 @@ export function NeuroSimDashboard() {
       if (!response.ok) {
         return;
       }
+
       const nextStatus = (await response.json()) as StatusResponse;
       startTransition(() => setStatus(nextStatus));
       if (!formSeededRef.current) {
         formSeededRef.current = true;
-        setForm({
-          mutationSeverity: Math.round(nextStatus.config.mutation_rate * 100),
-          tickRate: nextStatus.config.tick_rate,
-          targetPopulation: nextStatus.config.population_size,
-        });
+        syncFormFromConfig(nextStatus.config);
       }
     } catch {
       setConnectionState((current) => (current === "live" ? current : "offline"));
     }
+  });
+
+  const fetchRecordings = useEffectEvent(async () => {
+    try {
+      const response = await fetch(`${resolveApiBase()}/api/recordings`, { cache: "no-store" });
+      if (!response.ok) {
+        return;
+      }
+
+      const nextRecordings = (await response.json()) as RecordingSummary[];
+      startTransition(() => setRecordings(nextRecordings));
+    } catch {
+      setActionMessage("Could not refresh saved sessions.");
+    }
+  });
+
+  const handleBinaryFrame = useEffectEvent((payload: ArrayBuffer) => {
+    const parsed = parseBinaryFrame(payload);
+    latestFrameRef.current = parsed;
+    frameRevisionRef.current += 1;
+    uiUpdateCounterRef.current += 1;
+
+    if (uiUpdateCounterRef.current % 4 === 0) {
+      const nextStats: OverlayStats = {
+        generation: parsed.generation,
+        tick: parsed.tick,
+        agentCount: parsed.agentCount,
+        topFitness: parsed.topFitness,
+        averageComplexity: parsed.averageComplexity,
+        averageLifespan: parsed.averageLifespan,
+        halted: parsed.halted,
+      };
+
+      startTransition(() => {
+        setOverlayStats(nextStats);
+        setMessageCount((value) => value + 4);
+        setLiveSeries((current) => {
+          const next = [
+            ...current,
+            {
+              tick: parsed.tick,
+              alive: parsed.agentCount,
+              topFitness: parsed.topFitness,
+              complexity: parsed.averageComplexity,
+            },
+          ];
+          return next.slice(-LIVE_SERIES_LIMIT);
+        });
+      });
+    }
+
+    setConnectionState("live");
   });
 
   useEffect(() => {
@@ -123,7 +216,7 @@ export function NeuroSimDashboard() {
           return;
         }
         setConnectionState("offline");
-        reconnectTimer = window.setTimeout(connect, 1500);
+        reconnectTimer = window.setTimeout(connect, 1200);
       };
     };
 
@@ -140,22 +233,27 @@ export function NeuroSimDashboard() {
 
   useEffect(() => {
     fetchStatus();
-    const interval = window.setInterval(fetchStatus, 1000);
-    return () => window.clearInterval(interval);
-  }, [fetchStatus]);
+    fetchRecordings();
+    const statusInterval = window.setInterval(fetchStatus, 1000);
+    const recordingInterval = window.setInterval(fetchRecordings, 4000);
+    return () => {
+      window.clearInterval(statusInterval);
+      window.clearInterval(recordingInterval);
+    };
+  }, [fetchRecordings, fetchStatus]);
 
   const applyConfig = useEffectEvent(async () => {
     const fallbackConfig: ControlConfig = status?.config ?? {
       mutation_rate: 0.12,
-      population_size: 8000,
-      max_generations: 250,
-      food_spawn_rate: 28,
-      energy_decay: 0.65,
+      population_size: 2500,
+      max_generations: 80,
+      food_spawn_rate: 24,
+      energy_decay: 0.82,
       tick_rate: 30,
     };
 
-    setIsSubmitting(true);
-    setActionMessage("Applying runtime parameters to the Rust control API...");
+    setIsBusy(true);
+    setActionMessage("Applying simulation parameters...");
 
     try {
       const response = await fetch(`${resolveApiBase()}/api/config`, {
@@ -166,7 +264,7 @@ export function NeuroSimDashboard() {
         body: JSON.stringify({
           mutation_rate: form.mutationSeverity / 100,
           population_size: form.targetPopulation,
-          max_generations: fallbackConfig.max_generations,
+          max_generations: form.maxGenerations,
           food_spawn_rate: fallbackConfig.food_spawn_rate,
           energy_decay: fallbackConfig.energy_decay,
           tick_rate: form.tickRate,
@@ -178,17 +276,74 @@ export function NeuroSimDashboard() {
       }
 
       await fetchStatus();
-      setActionMessage("Runtime parameters updated.");
+      setActionMessage("Simulation parameters updated.");
     } catch {
       setActionMessage("Config update failed.");
     } finally {
-      setIsSubmitting(false);
+      setIsBusy(false);
+    }
+  });
+
+  const saveRecording = useEffectEvent(async () => {
+    setIsBusy(true);
+    setActionMessage("Saving current session for offline replay...");
+
+    try {
+      const response = await fetch(`${resolveApiBase()}/api/recordings/save`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: form.sessionName.trim() || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("save failed");
+      }
+
+      const saved = (await response.json()) as RecordingSummary;
+      await fetchRecordings();
+      await fetchStatus();
+      setActionMessage(`Saved ${saved.name}.`);
+    } catch {
+      setActionMessage("Could not save the current session.");
+    } finally {
+      setIsBusy(false);
+    }
+  });
+
+  const replayRecording = useEffectEvent(async (recordingId: string) => {
+    setIsBusy(true);
+    setActionMessage("Reconstructing saved session...");
+
+    try {
+      const response = await fetch(`${resolveApiBase()}/api/recordings/replay`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ recording_id: recordingId }),
+      });
+
+      if (!response.ok) {
+        throw new Error("replay failed");
+      }
+
+      await fetchStatus();
+      setLiveSeries([]);
+      setActionMessage(`Replay started from ${recordingId}.`);
+    } catch {
+      setActionMessage("Replay request failed.");
+    } finally {
+      setIsBusy(false);
     }
   });
 
   const triggerGodMode = useEffectEvent(async () => {
-    setIsSubmitting(true);
-    setActionMessage("Issuing God Mode population bottleneck...");
+    setIsBusy(true);
+    setActionMessage("Forcing a bottleneck...");
 
     try {
       const response = await fetch(`${resolveApiBase()}/api/god-mode`, {
@@ -197,284 +352,282 @@ export function NeuroSimDashboard() {
       if (!response.ok) {
         throw new Error("god mode failed");
       }
-      const payload = (await response.json()) as { removed_agents: number; alive_after: number };
+
       await fetchStatus();
-      setActionMessage(
-        `God Mode culled ${payload.removed_agents.toLocaleString()} agents. ${payload.alive_after.toLocaleString()} remain.`,
-      );
+      setActionMessage("Population culled by 50%.");
     } catch {
       setActionMessage("God Mode request failed.");
     } finally {
-      setIsSubmitting(false);
+      setIsBusy(false);
     }
   });
 
-  const chartData = {
-    labels: deferredHistory.map((entry) => `G${entry.generation}`),
+  const liveChartData = {
+    labels: liveSeries.map((point) => point.tick.toString()),
     datasets: [
       {
-        label: "Average Lifespan",
-        data: deferredHistory.map((entry) => entry.average_lifespan),
-        borderColor: "#4ade80",
-        backgroundColor: "rgba(74, 222, 128, 0.12)",
+        label: "Alive",
+        data: liveSeries.map((point) => point.alive),
+        borderColor: "#ffffff",
         borderWidth: 2,
         pointRadius: 0,
-        fill: true,
-        tension: 0.28,
+        tension: 0.15,
       },
       {
-        label: "Max Fitness",
-        data: deferredHistory.map((entry) => entry.max_fitness),
-        borderColor: "#38bdf8",
-        backgroundColor: "rgba(56, 189, 248, 0.06)",
+        label: "Top Fitness",
+        data: liveSeries.map((point) => point.topFitness),
+        borderColor: "#9ca3af",
         borderWidth: 2,
         pointRadius: 0,
-        fill: false,
-        tension: 0.24,
+        tension: 0.15,
       },
       {
-        label: "Average Brain Complexity",
-        data: deferredHistory.map((entry) => entry.average_brain_complexity),
-        borderColor: "#f97316",
-        backgroundColor: "rgba(249, 115, 22, 0.06)",
+        label: "Complexity",
+        data: liveSeries.map((point) => point.complexity),
+        borderColor: "#525252",
         borderWidth: 2,
         pointRadius: 0,
-        fill: false,
-        tension: 0.22,
+        tension: 0.15,
       },
     ],
   };
 
-  const chartOptions: ChartOptions<"line"> = {
+  const liveChartOptions: ChartOptions<"line"> = {
     responsive: true,
     maintainAspectRatio: false,
     animation: false,
-    interaction: {
-      mode: "index",
-      intersect: false,
-    },
     plugins: {
       legend: {
         labels: {
-          color: "#dbeafe",
+          color: "#d4d4d8",
         },
       },
       tooltip: {
-        backgroundColor: "#020617",
-        titleColor: "#f8fafc",
-        bodyColor: "#cbd5e1",
+        backgroundColor: "#111111",
+        titleColor: "#fafafa",
+        bodyColor: "#d4d4d8",
       },
     },
     scales: {
       x: {
         ticks: {
-          color: "#94a3b8",
-          maxTicksLimit: 12,
+          color: "#737373",
+          maxTicksLimit: 6,
         },
         grid: {
-          color: "rgba(148, 163, 184, 0.12)",
+          color: "rgba(82, 82, 82, 0.25)",
         },
       },
       y: {
         ticks: {
-          color: "#94a3b8",
+          color: "#737373",
         },
         grid: {
-          color: "rgba(148, 163, 184, 0.12)",
+          color: "rgba(82, 82, 82, 0.25)",
         },
       },
     },
   };
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-[1600px] flex-col gap-6 px-4 py-4 sm:px-6 lg:px-8">
-      <section className="glass-panel relative overflow-hidden rounded-[32px] p-6 sm:p-8">
-        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-300/60 to-transparent" />
-        <div className="grid gap-8 lg:grid-cols-[minmax(0,1.45fr)_380px]">
-          <div className="space-y-5">
-            <p className="font-mono text-xs uppercase tracking-[0.38em] text-cyan-300/80">
-              NeuroSim v2 / Rust + WebGL Instancing
-            </p>
-            <h1 className="max-w-4xl font-display text-4xl font-semibold leading-[0.95] text-white sm:text-6xl">
-              NEAT topologies evolving in a binary-streamed arena.
-            </h1>
-            <p className="max-w-3xl text-base leading-7 text-slate-300 sm:text-lg">
-              The backend runs a data-oriented Rust simulation with topology mutations, spatial
-              hashing, and rayon-parallel agent updates. The frontend decodes raw websocket frames
-              directly into instanced transforms for massive populations.
-            </p>
-          </div>
+    <main className="h-screen w-screen overflow-hidden bg-neutral-950 text-neutral-100">
+      <div className="relative h-full w-full">
+        <SimulationViewport
+          frameRef={latestFrameRef}
+          revisionRef={frameRevisionRef}
+          halted={overlayStats.halted}
+        />
 
-          <div className="grid gap-3 self-start">
-            <ConnectionBadge state={connectionState} />
-            <MetricCard label="Frames Seen" value={messageCount.toLocaleString()} />
-            <MetricCard
-              label="Generation"
-              value={(status?.generation ?? frame?.generation ?? 1).toLocaleString()}
-            />
-            <MetricCard
-              label="Halt State"
-              value={status?.halted || frame?.halted ? "Reached limit" : "Running"}
-            />
+        <OverlayPanel className="left-4 top-4 w-[320px]">
+          <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
+            Live Session
+          </p>
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <Stat label="Generation" value={overlayStats.generation.toString()} />
+            <Stat label="Tick" value={overlayStats.tick.toString()} />
+            <Stat label="Alive" value={overlayStats.agentCount.toLocaleString()} />
+            <Stat label="Frames" value={messageCount.toLocaleString()} />
+            <Stat label="Fitness" value={overlayStats.topFitness.toFixed(1)} />
+            <Stat label="Complexity" value={overlayStats.averageComplexity.toFixed(1)} />
           </div>
-        </div>
-      </section>
+          <div className="mt-4 flex items-center justify-between text-xs uppercase tracking-[0.28em] text-neutral-400">
+            <span>{connectionState === "live" ? "streaming" : connectionState}</span>
+            <span>{status?.session.replaying ? "replay mode" : "live mode"}</span>
+          </div>
+          <p className="mt-3 text-sm text-neutral-400">{actionMessage}</p>
+        </OverlayPanel>
 
-      <section className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_420px]">
-        <article className="glass-panel rounded-[32px] p-3 sm:p-4">
-          <div className="mb-4 flex flex-wrap items-start justify-between gap-4 px-2 sm:px-3">
+        <OverlayPanel className="right-4 top-4 w-[360px]">
+          <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="font-mono text-xs uppercase tracking-[0.34em] text-slate-400">
-                Simulation Arena
+              <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
+                Configuration
               </p>
-              <h2 className="mt-2 font-display text-2xl text-white sm:text-3xl">
-                50k-agent instanced render path
-              </h2>
+              <h2 className="mt-2 text-xl font-medium text-white">Run Controls</h2>
             </div>
-            <div className="flex flex-wrap gap-2 text-xs uppercase tracking-[0.28em] text-slate-300">
-              <LegendBadge color="bg-emerald-400" label="Food" />
-              <LegendBadge color="bg-rose-400" label="Poison" />
-              <LegendBadge color="bg-slate-100" label="Agents" />
-            </div>
+            <span className="rounded border border-neutral-800 px-2 py-1 text-[11px] uppercase tracking-[0.24em] text-neutral-400">
+              Seed {status?.session.seed ?? 7}
+            </span>
           </div>
-          <div className="h-[60vh] min-h-[420px] overflow-hidden rounded-[26px] border border-white/10 bg-slate-950">
-            <SimulationViewport frame={frame} />
-          </div>
-        </article>
 
-        <aside className="space-y-6">
-          <section className="glass-panel rounded-[32px] p-5 sm:p-6">
-            <div className="mb-5 flex items-center justify-between gap-3">
-              <div>
-                <p className="font-mono text-xs uppercase tracking-[0.34em] text-slate-400">
-                  Command Deck
-                </p>
-                <h2 className="mt-2 font-display text-2xl text-white">Live Runtime Controls</h2>
-              </div>
-            </div>
-
-            <div className="space-y-5">
-              <SliderField
-                label="Mutation Severity"
-                value={form.mutationSeverity}
-                min={0}
-                max={100}
-                unit="%"
-                onChange={(value) => setForm((current) => ({ ...current, mutationSeverity: value }))}
-              />
-              <SliderField
-                label="Tick Rate Speed"
-                value={form.tickRate}
-                min={1}
-                max={120}
-                unit="tps"
-                onChange={(value) => setForm((current) => ({ ...current, tickRate: value }))}
-              />
-              <SliderField
-                label="Target Population"
-                value={form.targetPopulation}
-                min={500}
-                max={50000}
-                unit=""
-                step={100}
-                onChange={(value) => setForm((current) => ({ ...current, targetPopulation: value }))}
-              />
-
-              <div className="flex flex-col gap-3 pt-2 sm:flex-row">
-                <button
-                  type="button"
-                  onClick={applyConfig}
-                  disabled={isSubmitting}
-                  className="rounded-full bg-cyan-400 px-5 py-3 font-mono text-xs uppercase tracking-[0.28em] text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Apply Config
-                </button>
-                <button
-                  type="button"
-                  onClick={triggerGodMode}
-                  disabled={isSubmitting}
-                  className="rounded-full border border-rose-400/50 bg-rose-500/10 px-5 py-3 font-mono text-xs uppercase tracking-[0.28em] text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  God Mode
-                </button>
-              </div>
-            </div>
-
-            <p className="mt-5 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-300">
-              {actionMessage}
-            </p>
-          </section>
-
-          <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-            <MetricCard
-              label="Alive Now"
-              value={(status?.metrics.alive ?? 0).toLocaleString()}
-              accent="emerald"
+          <div className="mt-5 space-y-4">
+            <RangeField
+              label="Mutation Severity"
+              value={form.mutationSeverity}
+              min={0}
+              max={100}
+              unit="%"
+              onChange={(value) => setForm((current) => ({ ...current, mutationSeverity: value }))}
             />
-            <MetricCard
+
+            <NumberField
+              label="Tick Rate"
+              value={form.tickRate}
+              min={1}
+              max={120}
+              onChange={(value) => setForm((current) => ({ ...current, tickRate: value }))}
+            />
+            <NumberField
               label="Population"
-              value={(status?.metrics.population ?? 0).toLocaleString()}
-              accent="cyan"
+              value={form.targetPopulation}
+              min={250}
+              max={50000}
+              step={100}
+              onChange={(value) => setForm((current) => ({ ...current, targetPopulation: value }))}
             />
-            <MetricCard
-              label="Avg Energy"
-              value={formatMetric(status?.metrics.average_energy)}
-              accent="amber"
+            <NumberField
+              label="Generations"
+              value={form.maxGenerations}
+              min={1}
+              max={5000}
+              onChange={(value) => setForm((current) => ({ ...current, maxGenerations: value }))}
             />
-            <MetricCard
-              label="Brain Complexity"
-              value={formatMetric(status?.metrics.average_brain_complexity)}
-              accent="violet"
+            <input
+              type="text"
+              value={form.sessionName}
+              onChange={(event) =>
+                setForm((current) => ({ ...current, sessionName: event.target.value }))
+              }
+              placeholder="Session name for offline save"
+              className="w-full rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600"
             />
-          </section>
-        </aside>
-      </section>
+          </div>
 
-      <section className="glass-panel rounded-[32px] p-5 sm:p-6">
-        <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <p className="font-mono text-xs uppercase tracking-[0.34em] text-slate-400">
-              Evolution Analytics
-            </p>
-            <h2 className="mt-2 font-display text-2xl text-white">
-              Lifespan, fitness, and neural complexity by generation
-            </h2>
+          <div className="mt-5 grid grid-cols-2 gap-3">
+            <ActionButton label="Apply" onClick={applyConfig} disabled={isBusy} />
+            <ActionButton label="God Mode" onClick={triggerGodMode} disabled={isBusy} />
+            <ActionButton label="Save Session" onClick={saveRecording} disabled={isBusy} />
+            <ActionButton
+              label={status?.session.recording_dirty ? "Unsaved" : "Saved"}
+              onClick={saveRecording}
+              disabled={isBusy || !status?.session.recording_dirty}
+            />
           </div>
-          <div className="text-sm text-slate-400">
-            Polling REST status while rendering raw binary frames over WebSocket.
+        </OverlayPanel>
+
+        <OverlayPanel className="bottom-4 right-4 h-[300px] w-[420px]">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
+                Live Telemetry
+              </p>
+              <h2 className="mt-2 text-xl font-medium text-white">Running Graph</h2>
+            </div>
+            <div className="text-right text-xs text-neutral-500">
+              <div>Avg lifespan {overlayStats.averageLifespan.toFixed(1)}</div>
+              <div>History {deferredHistory.length} generations</div>
+            </div>
           </div>
-        </div>
-        <div className="h-[320px] sm:h-[360px]">
-          <Line data={chartData} options={chartOptions} />
-        </div>
-      </section>
+          <div className="mt-4 h-[205px]">
+            <Line data={liveChartData} options={liveChartOptions} />
+          </div>
+        </OverlayPanel>
+
+        <OverlayPanel className="bottom-4 left-4 w-[420px]">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
+                Offline Replay
+              </p>
+              <h2 className="mt-2 text-xl font-medium text-white">Saved Sessions</h2>
+            </div>
+            <span className="text-xs text-neutral-500">
+              {recordings.length.toLocaleString()} stored
+            </span>
+          </div>
+
+          <div className="mt-4 max-h-[240px] space-y-2 overflow-auto pr-1">
+            {recordings.length === 0 ? (
+              <p className="text-sm text-neutral-500">
+                No saved sessions yet. Save the current run to replay it later.
+              </p>
+            ) : (
+              recordings.map((recording) => (
+                <button
+                  key={recording.id}
+                  type="button"
+                  onClick={() => replayRecording(recording.id)}
+                  className="w-full rounded border border-neutral-800 bg-neutral-950 px-3 py-3 text-left transition hover:border-neutral-600"
+                  disabled={isBusy}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-white">{recording.name}</div>
+                      <div className="mt-1 text-xs text-neutral-500">
+                        Gen {recording.final_generation} / Tick {recording.final_tick}
+                      </div>
+                    </div>
+                    <div className="text-right text-xs text-neutral-500">
+                      <div>{recording.population_size.toLocaleString()} agents</div>
+                      <div>{new Date(recording.saved_at_ms).toLocaleString()}</div>
+                    </div>
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </OverlayPanel>
+      </div>
     </main>
   );
 }
 
-function SimulationViewport({ frame }: { frame: BinaryFrame | null }) {
+function SimulationViewport({
+  frameRef,
+  revisionRef,
+  halted,
+}: {
+  frameRef: MutableRefObject<BinaryFrame | null>;
+  revisionRef: MutableRefObject<number>;
+  halted: boolean;
+}) {
   return (
-    <Canvas camera={{ position: [0, 320, 320], fov: 50 }}>
-      <color attach="background" args={["#020617"]} />
-      <fog attach="fog" args={["#020617", 350, 820]} />
-      <ambientLight intensity={0.7} />
-      <directionalLight position={[120, 220, 80]} intensity={1.2} color="#7dd3fc" />
-      <directionalLight position={[-80, 140, -120]} intensity={0.5} color="#f97316" />
+    <Canvas camera={{ position: [0, 320, 320], fov: 48 }}>
+      <color attach="background" args={["#0a0a0a"]} />
+      <ambientLight intensity={0.55} />
+      <directionalLight position={[80, 180, 90]} intensity={1.0} color="#ffffff" />
       <group rotation={[-0.95, 0, 0]}>
-        <mesh position={[0, -4, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <mesh position={[0, -4, 0]} rotation={[-Math.PI / 2, 0, 0]}>
           <planeGeometry args={[860, 860, 1, 1]} />
-          <meshStandardMaterial color="#04141f" roughness={0.94} metalness={0.08} />
+          <meshStandardMaterial color={halted ? "#141414" : "#111111"} roughness={1} metalness={0} />
         </mesh>
-        <ArenaInstancing frame={frame} />
+        <ArenaInstancing frameRef={frameRef} revisionRef={revisionRef} />
       </group>
     </Canvas>
   );
 }
 
-function ArenaInstancing({ frame }: { frame: BinaryFrame | null }) {
+function ArenaInstancing({
+  frameRef,
+  revisionRef,
+}: {
+  frameRef: MutableRefObject<BinaryFrame | null>;
+  revisionRef: MutableRefObject<number>;
+}) {
   const agentMesh = useRef<InstancedMesh>(null);
   const foodMesh = useRef<InstancedMesh>(null);
   const poisonMesh = useRef<InstancedMesh>(null);
+  const appliedRevisionRef = useRef(0);
   const agentDummy = useRef(new Object3D());
   const pointDummy = useRef(new Object3D());
   const agentColor = useRef(new Color());
@@ -491,10 +644,22 @@ function ArenaInstancing({ frame }: { frame: BinaryFrame | null }) {
     }
   }, []);
 
-  useEffect(() => {
-    if (!frame || !agentMesh.current || !foodMesh.current || !poisonMesh.current) {
+  useFrame(() => {
+    if (
+      !agentMesh.current ||
+      !foodMesh.current ||
+      !poisonMesh.current ||
+      revisionRef.current === appliedRevisionRef.current
+    ) {
       return;
     }
+
+    const frame = frameRef.current;
+    if (!frame) {
+      return;
+    }
+
+    appliedRevisionRef.current = revisionRef.current;
 
     const agentLimit = Math.min(frame.agentCount, MAX_RENDERED_AGENTS);
     const foodLimit = Math.min(frame.foodCount, MAX_RENDERED_POINTS);
@@ -518,7 +683,7 @@ function ArenaInstancing({ frame }: { frame: BinaryFrame | null }) {
       agentDummy.current.updateMatrix();
       agentTarget.setMatrixAt(index, agentDummy.current.matrix);
 
-      agentColor.current.setRGB(shade, shade, shade + energyRatio * 0.1);
+      agentColor.current.setRGB(shade, shade, shade);
       agentTarget.setColorAt(index, agentColor.current);
     }
 
@@ -526,10 +691,10 @@ function ArenaInstancing({ frame }: { frame: BinaryFrame | null }) {
       const offset = index * 2;
       pointDummy.current.position.set(
         frame.food[offset] - WORLD_HALF,
-        1.2,
+        1.1,
         frame.food[offset + 1] - WORLD_HALF,
       );
-      pointDummy.current.scale.setScalar(1);
+      pointDummy.current.scale.setScalar(0.9);
       pointDummy.current.updateMatrix();
       foodTarget.setMatrixAt(index, pointDummy.current.matrix);
     }
@@ -538,10 +703,10 @@ function ArenaInstancing({ frame }: { frame: BinaryFrame | null }) {
       const offset = index * 2;
       pointDummy.current.position.set(
         frame.poison[offset] - WORLD_HALF,
-        1.1,
+        1.05,
         frame.poison[offset + 1] - WORLD_HALF,
       );
-      pointDummy.current.scale.setScalar(1);
+      pointDummy.current.scale.setScalar(0.9);
       pointDummy.current.updateMatrix();
       poisonTarget.setMatrixAt(index, pointDummy.current.matrix);
     }
@@ -555,34 +720,60 @@ function ArenaInstancing({ frame }: { frame: BinaryFrame | null }) {
     if (agentTarget.instanceColor) {
       agentTarget.instanceColor.needsUpdate = true;
     }
-  }, [frame]);
+  });
 
   return (
     <>
       <instancedMesh ref={agentMesh} args={[undefined, undefined, MAX_RENDERED_AGENTS]}>
-        <coneGeometry args={[1.7, 4.2, 3]} />
-        <meshStandardMaterial vertexColors roughness={0.35} metalness={0.12} />
+        <coneGeometry args={[1.55, 3.8, 3]} />
+        <meshStandardMaterial vertexColors roughness={0.55} metalness={0.02} />
       </instancedMesh>
 
       <instancedMesh ref={foodMesh} args={[undefined, undefined, MAX_RENDERED_POINTS]}>
-        <sphereGeometry args={[1.05, 8, 8]} />
-        <meshBasicMaterial color="#4ade80" />
+        <sphereGeometry args={[0.95, 6, 6]} />
+        <meshBasicMaterial color="#d4d4d8" />
       </instancedMesh>
 
       <instancedMesh ref={poisonMesh} args={[undefined, undefined, MAX_RENDERED_POINTS]}>
-        <sphereGeometry args={[0.95, 8, 8]} />
-        <meshBasicMaterial color="#fb7185" />
+        <sphereGeometry args={[0.85, 6, 6]} />
+        <meshBasicMaterial color="#525252" />
       </instancedMesh>
     </>
   );
 }
 
-function SliderField({
+function OverlayPanel({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  className: string;
+}) {
+  return (
+    <section
+      className={`absolute rounded border border-neutral-800 bg-neutral-900/92 p-4 shadow-2xl backdrop-blur ${className}`}
+    >
+      {children}
+    </section>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-neutral-800 bg-neutral-950 px-3 py-2">
+      <div className="font-mono text-[11px] uppercase tracking-[0.24em] text-neutral-500">
+        {label}
+      </div>
+      <div className="mt-2 text-lg text-white">{value}</div>
+    </div>
+  );
+}
+
+function RangeField({
   label,
   value,
   min,
   max,
-  step = 1,
   unit,
   onChange,
 }: {
@@ -590,91 +781,80 @@ function SliderField({
   value: number;
   min: number;
   max: number;
-  step?: number;
   unit: string;
   onChange: (value: number) => void;
 }) {
   return (
     <label className="block">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="font-mono text-xs uppercase tracking-[0.28em] text-slate-300">
-          {label}
-        </span>
-        <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm text-white">
-          {value.toLocaleString()}
-          {unit ? ` ${unit}` : ""}
+      <div className="mb-2 flex items-center justify-between text-sm">
+        <span className="text-neutral-300">{label}</span>
+        <span className="font-mono text-xs text-neutral-500">
+          {value}
+          {unit}
         </span>
       </div>
       <input
         type="range"
         min={min}
         max={max}
-        step={step}
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
-        className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-cyan-400"
+        className="h-2 w-full cursor-pointer appearance-none rounded bg-neutral-800 accent-white"
       />
     </label>
   );
 }
 
-function ConnectionBadge({ state }: { state: "connecting" | "live" | "offline" }) {
-  const palette =
-    state === "live"
-      ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"
-      : state === "connecting"
-        ? "border-amber-400/40 bg-amber-400/10 text-amber-100"
-        : "border-rose-400/40 bg-rose-500/10 text-rose-100";
-
-  return (
-    <div className={`rounded-full border px-4 py-3 font-mono text-xs uppercase tracking-[0.3em] ${palette}`}>
-      {state === "live" ? "Binary stream live" : state}
-    </div>
-  );
-}
-
-function MetricCard({
+function NumberField({
   label,
   value,
-  accent = "slate",
+  min,
+  max,
+  step = 1,
+  onChange,
 }: {
   label: string;
-  value: string;
-  accent?: "slate" | "emerald" | "cyan" | "amber" | "violet";
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  onChange: (value: number) => void;
 }) {
-  const accentClass =
-    accent === "emerald"
-      ? "from-emerald-400/18 to-emerald-500/5"
-      : accent === "cyan"
-        ? "from-cyan-400/18 to-cyan-500/5"
-        : accent === "amber"
-          ? "from-amber-400/18 to-amber-500/5"
-          : accent === "violet"
-            ? "from-violet-400/18 to-violet-500/5"
-            : "from-white/10 to-white/0";
-
   return (
-    <div className={`glass-panel rounded-[26px] bg-gradient-to-br ${accentClass} p-4 sm:p-5`}>
-      <p className="font-mono text-xs uppercase tracking-[0.28em] text-slate-400">{label}</p>
-      <p className="mt-3 font-display text-2xl text-white sm:text-3xl">{value}</p>
-    </div>
+    <label className="block">
+      <div className="mb-2 text-sm text-neutral-300">{label}</div>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="w-full rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-white outline-none"
+      />
+    </label>
   );
 }
 
-function LegendBadge({ color, label }: { color: string; label: string }) {
+function ActionButton({
+  label,
+  onClick,
+  disabled,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled: boolean;
+}) {
   return (
-    <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2">
-      <span className={`h-2.5 w-2.5 rounded-full ${color}`} />
-      <span>{label}</span>
-    </span>
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-white transition hover:border-neutral-500 disabled:cursor-not-allowed disabled:text-neutral-600"
+    >
+      {label}
+    </button>
   );
-}
-
-function formatMetric(value: number | undefined) {
-  if (value === undefined) {
-    return "0.0";
-  }
-  return value.toFixed(1);
 }
 
 function resolveApiBase() {

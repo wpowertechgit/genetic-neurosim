@@ -33,6 +33,9 @@ README.md
   - `GET /api/config`
   - `POST /api/config`
   - `POST /api/god-mode`
+  - `GET /api/recordings`
+  - `POST /api/recordings/save`
+  - `POST /api/recordings/replay`
 - ECS-style storage using flat component arrays for positions, velocities, energy, angle, fitness, and genomes
 - NEAT-style evolution:
   - connection weight mutation
@@ -46,20 +49,25 @@ README.md
   - payload: packed float arrays for agents, food, and poison
 - Server-side halt when the configured generation limit is reached
 - God Mode endpoint that randomly kills 50% of the current population
+- Offline session saving and deterministic replay reconstruction from:
+  - initial seed
+  - initial config
+  - recorded runtime control events
 
 ## Frontend highlights
 
 - Binary websocket parsing with `DataView` and `Float32Array`
 - `@react-three/fiber` arena with `InstancedMesh` rendering for up to 50,000 agents in one draw path
-- Tailwind-based translucent control panel overlay
-- Runtime sliders for:
+- Overlay-based UI with floating control, telemetry, and replay panels
+- Runtime controls for:
   - mutation severity
   - tick rate speed
   - target population
+  - max generations
 - Chart.js analytics for:
-  - average lifespan
-  - max fitness
-  - average brain complexity
+  - live alive count
+  - live top fitness
+  - live average brain complexity
 
 ## Binary protocol
 

@@ -7,6 +7,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
+    http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -14,7 +15,8 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use serde::Serialize;
 use simulation::{
-    ConfigPatch, ControlConfig, GodModeResponse, SharedSimulation, Simulation, StatusResponse,
+    ConfigPatch, ControlConfig, GodModeResponse, RecordingSummary, ReplayRecordingRequest,
+    SaveRecordingRequest, SharedSimulation, Simulation, StatusResponse,
 };
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
@@ -47,6 +49,9 @@ async fn main() {
         .route("/api/status", get(get_status))
         .route("/api/config", get(get_config).post(update_config))
         .route("/api/god-mode", post(god_mode))
+        .route("/api/recordings", get(list_recordings))
+        .route("/api/recordings/save", post(save_recording))
+        .route("/api/recordings/replay", post(replay_recording))
         .with_state(state)
         .layer(
             CorsLayer::new()
@@ -123,6 +128,38 @@ async fn update_config(
 async fn god_mode(State(state): State<Arc<AppState>>) -> Json<GodModeResponse> {
     let mut simulation = state.simulation.write();
     Json(simulation.kill_half_population())
+}
+
+async fn list_recordings(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<RecordingSummary>>, (StatusCode, String)> {
+    let simulation = state.simulation.read();
+    simulation
+        .list_recordings()
+        .map(Json)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))
+}
+
+async fn save_recording(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<SaveRecordingRequest>,
+) -> Result<Json<RecordingSummary>, (StatusCode, String)> {
+    let mut simulation = state.simulation.write();
+    simulation
+        .save_recording(request.name)
+        .map(Json)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))
+}
+
+async fn replay_recording(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ReplayRecordingRequest>,
+) -> Result<Json<RecordingSummary>, (StatusCode, String)> {
+    let mut simulation = state.simulation.write();
+    simulation
+        .replay_recording(&request.recording_id)
+        .map(Json)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))
 }
 
 async fn ws_simulation(
