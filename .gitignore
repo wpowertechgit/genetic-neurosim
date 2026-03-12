@@ -7,5 +7,6 @@ venv/
 node_modules/
 .next/
 dist/
+backend/target/
 
 .DS_Store

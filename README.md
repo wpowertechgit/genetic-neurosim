@@ -1,21 +1,21 @@
-# NeuroSim
+# NeuroSim v2
 
-NeuroSim is a full-stack evolutionary simulation. A FastAPI backend runs a live 800x800 ecosystem where neural-network-driven agents search for food, avoid poison, burn energy, die, and pass their weights into the next generation through crossover and mutation. A Next.js frontend renders the arena in real time on an HTML5 canvas and charts generation-level learning signals.
+NeuroSim v2 is a real-time artificial life system with a Rust simulation backend and a Next.js + React Three Fiber control deck. The backend evolves agents with NEAT-style topology mutation, broadcasts the arena as compact binary websocket frames, and exposes REST controls for live configuration changes and forced evolutionary bottlenecks.
 
 ## Stack
 
-- Backend: FastAPI, NumPy, WebSockets
-- Frontend: Next.js, React, HTML5 Canvas, Chart.js
-- Evolution loop: feed-forward neural networks built from raw NumPy matrix math plus a genetic algorithm
+- Backend: Rust, Axum, Tokio, Rayon
+- Simulation core: ECS-style data layout, spatial hash grid, NEAT-inspired genomes with node/link mutations
+- Frontend: Next.js 16, React 19, React Three Fiber, Tailwind CSS, Chart.js
 
 ## Project layout
 
 ```text
 backend/
-  app/
-    main.py
-    simulation.py
-  requirements.txt
+  Cargo.toml
+  src/
+    main.rs
+    simulation.rs
 frontend/
   app/
   components/
@@ -24,108 +24,118 @@ frontend/
 README.md
 ```
 
-## Backend features
+## Backend highlights
 
-- 800x800 toroidal environment
-- Random food and poison spawning
-- Per-agent feed-forward neural network built from scratch with NumPy
-- Core sensory inputs include nearest food distance, nearest poison distance, and current energy
-- Signed target bearings are also included so the two-output controller can steer instead of only modulating speed blindly
-- Outputs: rotation and thrust
-- 30 tick/second simulation loop
-- Spatial hashing for local collision checks and nearest-item queries
-- Genetic algorithm that:
-  - ranks agents by survival time
-  - keeps the top 10% as the breeding pool
-  - crosses over parent weights
-  - mutates 5% of genes
-- WebSocket stream at `/ws/simulation`
+- Axum websocket endpoint at `/ws/simulation`
+- REST control API:
+  - `GET /health`
+  - `GET /api/status`
+  - `GET /api/config`
+  - `POST /api/config`
+  - `POST /api/god-mode`
+- ECS-style storage using flat component arrays for positions, velocities, energy, angle, fitness, and genomes
+- NEAT-style evolution:
+  - connection weight mutation
+  - add-connection mutation
+  - add-node mutation by splitting an existing connection
+  - innovation tracking for structural mutations
+- Parallel agent update loop and collision candidate generation via Rayon
+- Spatial hash grid for nearest-target sensing and consumable collision checks
+- Raw binary websocket frames:
+  - header: generation, tick, counts, halt flag, top fitness, average lifespan, average brain complexity
+  - payload: packed float arrays for agents, food, and poison
+- Server-side halt when the configured generation limit is reached
+- God Mode endpoint that randomly kills 50% of the current population
 
-## Frontend features
+## Frontend highlights
 
-- Live WebSocket connection to the backend simulation
-- Canvas rendering for:
-  - glowing green food
-  - glowing red poison
-  - triangular agents oriented by heading
-  - energy-based agent brightness
-  - fading motion trails
-- Real-time Chart.js line chart for:
-  - average lifespan per generation
-  - max fitness per generation
+- Binary websocket parsing with `DataView` and `Float32Array`
+- `@react-three/fiber` arena with `InstancedMesh` rendering for up to 50,000 agents in one draw path
+- Tailwind-based translucent control panel overlay
+- Runtime sliders for:
+  - mutation severity
+  - tick rate speed
+  - target population
+- Chart.js analytics for:
+  - average lifespan
+  - max fitness
+  - average brain complexity
 
-## Run the backend
+## Binary protocol
 
-1. Create and activate a Python virtual environment.
-2. Install dependencies:
+The websocket sends a single little-endian binary frame format:
+
+```text
+Header (36 bytes)
+  u32 generation
+  u32 tick
+  u32 alive_agent_count
+  u32 food_count
+  u32 poison_count
+  u32 halted_flag
+  f32 top_fitness
+  f32 average_lifespan
+  f32 average_brain_complexity
+
+Payload
+  agents: [x, y, energy, angle] * alive_agent_count
+  food:   [x, y] * food_count
+  poison: [x, y] * poison_count
+```
+
+This lets the frontend decode frames with direct byte offsets and no JSON parsing overhead.
+
+## Install and run
+
+### Backend
 
 ```bash
 cd backend
-pip install -r requirements.txt
+cargo run
 ```
 
-3. Start the API server:
-
-```bash
-uvicorn app.main:app --reload
-```
-
-The backend will be available at `http://127.0.0.1:8000`, with:
-
-- Health check: `GET /health`
-- Snapshot endpoint: `GET /api/snapshot`
-- Simulation stream: `ws://127.0.0.1:8000/ws/simulation`
-
-## Run the frontend
-
-1. Install dependencies:
+### Frontend
 
 ```bash
 cd frontend
 npm install
+npm run dev
 ```
 
-2. Optionally define a custom backend WebSocket URL:
+The frontend runs at `http://127.0.0.1:3000` and the backend listens on `http://127.0.0.1:8000`.
 
-```bash
-set NEXT_PUBLIC_SIM_WS_URL=ws://127.0.0.1:8000/ws/simulation
-```
+## Environment variables
 
-PowerShell alternative for the same session:
+Optional frontend overrides:
 
 ```powershell
+$env:NEXT_PUBLIC_SIM_API_URL="http://127.0.0.1:8000"
 $env:NEXT_PUBLIC_SIM_WS_URL="ws://127.0.0.1:8000/ws/simulation"
 ```
 
-3. Start the Next.js app:
+## Run both on Windows
 
-```bash
-npm run dev
+From the repository root:
+
+```powershell
+.\start.ps1
 ```
 
-The frontend will be available at `http://127.0.0.1:3000`.
+Or:
 
-## Run both together
-
-Open two terminals:
-
-Terminal 1:
-
-```bash
-cd backend
-uvicorn app.main:app --reload
+```bat
+start.bat
 ```
 
-Terminal 2:
+The script starts `cargo run` for the Rust backend and `npm run dev` for the Next.js frontend in separate PowerShell windows. If `frontend/node_modules` is missing, it runs `npm install` first.
+
+## Verification
+
+The current rewrite has been verified locally with:
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd backend && cargo check
+cd frontend && npx tsc --noEmit
+cd frontend && npm run build
 ```
 
-## Notes
-
-- The frontend defaults to `ws://<current-host>:8000/ws/simulation` if `NEXT_PUBLIC_SIM_WS_URL` is not set.
-- Generation history is streamed from the backend so the chart reflects the current evolutionary run.
-- Use a dedicated Python virtual environment for the backend. Shared environments may already contain packages that pin older NumPy versions.

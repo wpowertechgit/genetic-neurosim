@@ -1,41 +1,34 @@
-export type ConsumableSnapshot = {
-  x: number;
-  y: number;
-};
-
-export type AgentSnapshot = {
-  id: number;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  angle: number;
-  energy: number;
-  age: number;
-  fitness: number;
-};
-
-export type GenerationHistoryPoint = {
+export type HistoryPoint = {
   generation: number;
   average_lifespan: number;
   max_fitness: number;
+  average_brain_complexity: number;
 };
 
-export type SimulationStats = {
+export type StatusMetrics = {
   alive: number;
   population: number;
   average_energy: number;
   average_lifespan: number;
   max_fitness: number;
   top_fitness_ever: number;
+  average_brain_complexity: number;
 };
 
-export type SimulationFrame = {
-  tick: number;
+export type ControlConfig = {
+  mutation_rate: number;
+  population_size: number;
+  max_generations: number;
+  food_spawn_rate: number;
+  energy_decay: number;
+  tick_rate: number;
+};
+
+export type StatusResponse = {
   generation: number;
-  agents: AgentSnapshot[];
-  food: ConsumableSnapshot[];
-  poison: ConsumableSnapshot[];
-  stats: SimulationStats;
-  history: GenerationHistoryPoint[];
+  tick: number;
+  halted: boolean;
+  config: ControlConfig;
+  metrics: StatusMetrics;
+  history: HistoryPoint[];
 };

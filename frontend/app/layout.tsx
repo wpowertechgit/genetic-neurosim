@@ -4,8 +4,8 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "NeuroSim | The Darwin Arena",
-  description: "Watch evolving neural agents learn to survive in a live digital ecosystem.",
+  title: "NeuroSim v2 | Evolution Control Deck",
+  description: "Rust-powered evolutionary life simulation rendered with React Three Fiber.",
 };
 
 export default function RootLayout({
@@ -15,7 +15,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body className="bg-slate-950 text-white antialiased">{children}</body>
     </html>
   );
 }
