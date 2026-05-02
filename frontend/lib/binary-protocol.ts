@@ -1,5 +1,5 @@
 const HEADER_BYTES = 36;
-const AGENT_STRIDE = 4;
+const AGENT_STRIDE = 5;
 const POINT_STRIDE = 2;
 
 export type BinaryFrame = {
@@ -12,7 +12,7 @@ export type BinaryFrame = {
   topFitness: number;
   averageLifespan: number;
   averageComplexity: number;
-  agents: Float32Array;
+  agents: Float32Array; // [x, y, energy, angle, cluster_id] * agentCount
   food: Float32Array;
   poison: Float32Array;
 };

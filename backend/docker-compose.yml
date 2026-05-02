@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  database:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: premadegraph
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  backend:
+    build: .
+    environment:
+      - DATABASE_URL=postgres://postgres:postgres@database/premadegraph
+    ports:
+      - "8000:8000"
+    depends_on:
+      - database
+
+volumes:
+  postgres_data:

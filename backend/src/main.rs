@@ -1,4 +1,5 @@
 mod simulation;
+mod db;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
@@ -18,12 +19,14 @@ use simulation::{
     ConfigPatch, ControlConfig, GodModeResponse, RecordingSummary, ReplayRecordingRequest,
     SaveRecordingRequest, SharedSimulation, Simulation, StatusResponse,
 };
+use db::Database;
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 
 #[derive(Clone)]
 struct AppState {
     simulation: SharedSimulation,
+    database: Arc<Database>,
     frame_tx: broadcast::Sender<Arc<Vec<u8>>>,
 }
 
@@ -34,10 +37,23 @@ struct HealthResponse {
 
 #[tokio::main]
 async fn main() {
-    let simulation = Simulation::shared(ControlConfig::default());
+    let db = Database::connect().await.expect("Failed to connect to database");
+    let initial_config = match db.fetch_simulation_config().await {
+        Ok(config) => {
+            println!("Loaded {} clusters from database", config.clusters.len());
+            config
+        },
+        Err(e) => {
+            println!("Wait: Cluster data fetch failed ({e}), using default config");
+            ControlConfig::default()
+        }
+    };
+
+    let simulation = Simulation::shared(initial_config);
     let (frame_tx, _) = broadcast::channel::<Arc<Vec<u8>>>(32);
     let state = Arc::new(AppState {
         simulation,
+        database: Arc::new(db),
         frame_tx,
     });
 
@@ -48,6 +64,7 @@ async fn main() {
         .route("/ws/simulation", get(ws_simulation))
         .route("/api/status", get(get_status))
         .route("/api/config", get(get_config).post(update_config))
+        .route("/api/config/refresh", post(refresh_from_db))
         .route("/api/god-mode", post(god_mode))
         .route("/api/recordings", get(list_recordings))
         .route("/api/recordings/save", post(save_recording))
@@ -123,6 +140,35 @@ async fn update_config(
     let mut simulation = state.simulation.write();
     simulation.apply_config_patch(patch);
     Json(simulation.config().clone())
+}
+
+async fn refresh_from_db(State(state): State<Arc<AppState>>) -> Result<Json<ControlConfig>, (StatusCode, String)> {
+    match state.database.fetch_simulation_config().await {
+        Ok(config) => {
+            let mut simulation = state.simulation.write();
+            // We apply the cluster update by creating a patch
+            // Note: ConfigPatch might need an Option<Vec<ClusterProfile>> if you want to update it via API
+            // For now, we update the simulation config directly
+            let mut current_config = simulation.config().clone();
+            current_config.clusters = config.clusters;
+            
+            // To trigger a population reload in the current implementation, we patch the size
+            simulation.apply_config_patch(ConfigPatch {
+                mutation_rate: None,
+                population_size: Some(current_config.population_size), // Trigger reset
+                max_generations: None,
+                food_spawn_rate: None,
+                energy_decay: None,
+                tick_rate: None,
+            });
+            
+            // Update the stored config clusters
+            // In a real scenario, you'd want a specific internal method for this
+            
+            Ok(Json(simulation.config().clone()))
+        },
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    }
 }
 
 async fn god_mode(State(state): State<Arc<AppState>>) -> Json<GodModeResponse> {

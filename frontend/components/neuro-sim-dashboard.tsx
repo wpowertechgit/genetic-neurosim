@@ -849,11 +849,12 @@ function ArenaInstancing({
     const poisonTarget = poisonMesh.current;
 
     for (let index = 0; index < agentLimit; index += 1) {
-      const offset = index * 4;
+      const offset = index * 5;
       const x = frame.agents[offset] - WORLD_HALF;
       const z = frame.agents[offset + 1] - WORLD_HALF;
       const energy = frame.agents[offset + 2];
       const angle = frame.agents[offset + 3];
+      const clusterId = frame.agents[offset + 4];
       const energyRatio = Math.max(0.12, Math.min(1, energy / 200));
       const shade = 0.18 + energyRatio * 0.82;
 
@@ -863,7 +864,13 @@ function ArenaInstancing({
       agentDummy.current.updateMatrix();
       agentTarget.setMatrixAt(index, agentDummy.current.matrix);
 
-      agentColor.current.setRGB(shade, shade, shade);
+      if (clusterId > 0) {
+        // Simple color mapping for clusters
+        const hue = (clusterId * 137.5) % 360;
+        agentColor.current.setHSL(hue / 360, 0.8, 0.5 + energyRatio * 0.2);
+      } else {
+        agentColor.current.setRGB(shade, shade, shade);
+      }
       agentTarget.setColorAt(index, agentColor.current);
     }
 

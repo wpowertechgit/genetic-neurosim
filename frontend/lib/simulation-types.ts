@@ -15,6 +15,15 @@ export type StatusMetrics = {
   average_brain_complexity: number;
 };
 
+export type ClusterProfile = {
+  id: string;
+  size_ratio: number;
+  mean_opscore: number;
+  opscore_stddev: number;
+  cohesion: number;
+  internal_edge_ratio: number;
+};
+
 export type ControlConfig = {
   mutation_rate: number;
   population_size: number;
@@ -22,6 +31,7 @@ export type ControlConfig = {
   food_spawn_rate: number;
   energy_decay: number;
   tick_rate: number;
+  clusters: ClusterProfile[];
 };
 
 export type StatusResponse = {

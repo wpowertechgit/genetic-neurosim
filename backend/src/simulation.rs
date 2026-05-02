@@ -40,6 +40,17 @@ pub struct ControlConfig {
     pub food_spawn_rate: u32,
     pub energy_decay: f32,
     pub tick_rate: u32,
+    pub clusters: Vec<ClusterProfile>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ClusterProfile {
+    pub id: String,
+    pub size_ratio: f32,              // 0.0 - 1.0 (portion of total population_size)
+    pub mean_opscore: f32,            // Maps to baseline brain effectiveness/complexity
+    pub opscore_stddev: f32,          // Maps to initial genome variance
+    pub cohesion: f32,                // Maps to mutation resistance or coordination
+    pub internal_edge_ratio: f32,     // Maps to persistence/stability
 }
 
 impl Default for ControlConfig {
@@ -51,6 +62,7 @@ impl Default for ControlConfig {
             food_spawn_rate: 24,
             energy_decay: 0.82,
             tick_rate: 30,
+            clusters: Vec::new(),
         }
     }
 }
@@ -470,10 +482,16 @@ struct AgentStorage {
     poison_hits: Vec<u32>,
     alive: Vec<bool>,
     brains: Vec<Genome>,
+    cluster_ids: Vec<u8>, // 0 for default, 1+ for specific clusters
 }
 
 impl AgentStorage {
-    fn new(rng: &mut SmallRng, tracker: &mut InnovationTracker, population_size: usize) -> Self {
+    fn new(
+        rng: &mut SmallRng,
+        tracker: &mut InnovationTracker,
+        config: &ControlConfig,
+    ) -> Self {
+        let population_size = config.population_size;
         let mut positions = Vec::with_capacity(population_size);
         let mut velocities = Vec::with_capacity(population_size);
         let mut angles = Vec::with_capacity(population_size);
@@ -484,18 +502,56 @@ impl AgentStorage {
         let mut poison_hits = Vec::with_capacity(population_size);
         let mut alive = Vec::with_capacity(population_size);
         let mut brains = Vec::with_capacity(population_size);
+        let mut cluster_ids = Vec::with_capacity(population_size);
 
-        for _ in 0..population_size {
-            positions.push(random_point(rng));
-            velocities.push(Vec2::default());
-            angles.push(rng.random_range(-std::f32::consts::PI..std::f32::consts::PI));
-            energies.push(BASE_ENERGY);
-            ages.push(0);
-            fitness.push(0.0);
-            food_eaten.push(0);
-            poison_hits.push(0);
-            alive.push(true);
-            brains.push(Genome::minimal(tracker, rng));
+        if config.clusters.is_empty() {
+            for _ in 0..population_size {
+                positions.push(random_point(rng));
+                velocities.push(Vec2::default());
+                angles.push(rng.random_range(-std::f32::consts::PI..std::f32::consts::PI));
+                energies.push(BASE_ENERGY);
+                ages.push(0);
+                fitness.push(0.0);
+                food_eaten.push(0);
+                poison_hits.push(0);
+                alive.push(true);
+                brains.push(Genome::minimal(tracker, rng));
+                cluster_ids.push(0);
+            }
+        } else {
+            let mut remaining = population_size;
+            for (c_idx, cluster) in config.clusters.iter().enumerate() {
+                let count = if c_idx == config.clusters.len() - 1 {
+                    remaining
+                } else {
+                    ((population_size as f32) * cluster.size_ratio).floor() as usize
+                };
+                remaining = remaining.saturating_sub(count);
+
+                for _ in 0..count {
+                    positions.push(random_point(rng));
+                    velocities.push(Vec2::default());
+                    angles.push(rng.random_range(-std::f32::consts::PI..std::f32::consts::PI));
+                    energies.push(BASE_ENERGY);
+                    ages.push(0);
+                    fitness.push(0.0);
+                    food_eaten.push(0);
+                    poison_hits.push(0);
+                    alive.push(true);
+
+                    // Proxy mapping: high opscore -> more initial random connections
+                    let mut genome = Genome::minimal(tracker, rng);
+                    let mutation_attempts = (cluster.mean_opscore * 5.0) as usize;
+                    for _ in 0..mutation_attempts {
+                        genome.add_node_mutation(tracker, rng);
+                        genome.add_connection_mutation(tracker, rng);
+                    }
+                    genome.rebuild_compiled();
+                    
+                    brains.push(genome);
+                    cluster_ids.push((c_idx + 1) as u8);
+                }
+            }
         }
 
         Self {
@@ -509,6 +565,7 @@ impl AgentStorage {
             poison_hits,
             alive,
             brains,
+            cluster_ids,
         }
     }
 
@@ -516,10 +573,16 @@ impl AgentStorage {
         self.positions.len()
     }
 
+    fn rebuild_all_compiled(&mut self) {
+        for brain in &mut self.brains {
+            brain.rebuild_compiled();
+        }
+    }
+
     fn replace_population(
         &mut self,
         rng: &mut SmallRng,
-        brains: Vec<Genome>,
+        offspring_data: Vec<(Genome, u8)>,
         population_size: usize,
     ) {
         self.positions.clear();
@@ -531,7 +594,10 @@ impl AgentStorage {
         self.food_eaten.clear();
         self.poison_hits.clear();
         self.alive.clear();
+        
+        let (brains, cluster_ids): (Vec<Genome>, Vec<u8>) = offspring_data.into_iter().unzip();
         self.brains = brains;
+        self.cluster_ids = cluster_ids;
 
         self.positions.reserve(population_size);
         self.velocities.reserve(population_size);
@@ -1044,7 +1110,7 @@ impl Simulation {
     fn with_seed(config: ControlConfig, seed: u64) -> Self {
         let mut rng = SmallRng::seed_from_u64(seed);
         let mut innovation = InnovationTracker::new();
-        let agents = AgentStorage::new(&mut rng, &mut innovation, config.population_size);
+        let agents = AgentStorage::new(&mut rng, &mut innovation, &config);
         let world = Environment::new(&mut rng, config.population_size);
 
         let mut simulation = Self {
@@ -1275,6 +1341,8 @@ impl Simulation {
                 .choose(&mut self.rng)
                 .expect("elite pool must be non-empty");
 
+            let cluster_id = self.agents.cluster_ids[parent_a]; // Child inherits cluster from parent A
+
             let mut child = Genome::crossover(
                 &self.agents.brains[parent_a],
                 self.agents.fitness[parent_a],
@@ -1287,7 +1355,7 @@ impl Simulation {
                 &mut self.rng,
                 self.config.mutation_rate,
             );
-            offspring.push(child);
+            offspring.push((child, cluster_id));
         }
 
         self.generation += 1;
@@ -1347,14 +1415,24 @@ impl Simulation {
         }
 
         if self.config.population_size != original_population {
-            let mut fresh_brains = Vec::with_capacity(self.config.population_size);
-            for _ in 0..self.config.population_size {
-                fresh_brains.push(Genome::minimal(&mut self.innovation, &mut self.rng));
+            let mut fresh_offspring = Vec::with_capacity(self.config.population_size);
+            if self.agents.brains.is_empty() {
+                for _ in 0..self.config.population_size {
+                    fresh_offspring.push((Genome::minimal(&mut self.innovation, &mut self.rng), 0));
+                }
+            } else {
+                for _ in 0..self.config.population_size {
+                    let source_idx = self.rng.random_range(0..self.agents.brains.len());
+                    fresh_offspring.push((
+                        self.agents.brains[source_idx].clone(),
+                        self.agents.cluster_ids[source_idx],
+                    ));
+                }
             }
             self.world.reset(&mut self.rng, self.config.population_size);
             self.agents.replace_population(
                 &mut self.rng,
-                fresh_brains,
+                fresh_offspring,
                 self.config.population_size,
             );
         }
@@ -1583,7 +1661,7 @@ impl Simulation {
         //  u32 halted_flag, f32 top_fitness, f32 average_lifespan, f32 average_complexity]
         //
         // After the 36-byte header:
-        // agents: [x, y, energy, angle] * alive_agents
+        // agents: [x, y, energy, angle, cluster_id] * alive_agents
         // food:   [x, y] * food_count
         // poison: [x, y] * poison_count
         //
@@ -1604,6 +1682,7 @@ impl Simulation {
             push_f32(&mut buffer, self.agents.positions[index].y);
             push_f32(&mut buffer, self.agents.energies[index]);
             push_f32(&mut buffer, self.agents.angles[index]);
+            push_f32(&mut buffer, self.agents.cluster_ids[index] as f32);
         }
         for item in &self.world.food {
             push_f32(&mut buffer, item.x);
