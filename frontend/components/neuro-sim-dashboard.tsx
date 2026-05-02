@@ -155,7 +155,7 @@ export function NeuroSimDashboard() {
       const nextRecordings = (await response.json()) as RecordingSummary[];
       startTransition(() => setRecordings(nextRecordings));
     } catch {
-      // Keep the previous list instead of spamming status copy.
+      // silence
     }
   });
 
@@ -380,24 +380,24 @@ export function NeuroSimDashboard() {
       {
         label: "Alive",
         data: liveSeries.map((point) => point.alive),
-        borderColor: "#fafafa",
-        borderWidth: 2,
+        borderColor: "#f0f0fa",
+        borderWidth: 1.5,
         pointRadius: 0,
         tension: 0.16,
       },
       {
         label: "Top Fitness",
         data: liveSeries.map((point) => point.topFitness),
-        borderColor: "#a3a3a3",
-        borderWidth: 2,
+        borderColor: "rgba(240,240,250,0.55)",
+        borderWidth: 1.5,
         pointRadius: 0,
         tension: 0.16,
       },
       {
         label: "Complexity",
         data: liveSeries.map((point) => point.complexity),
-        borderColor: "#525252",
-        borderWidth: 2,
+        borderColor: "rgba(240,240,250,0.25)",
+        borderWidth: 1.5,
         pointRadius: 0,
         tension: 0.16,
       },
@@ -410,24 +410,24 @@ export function NeuroSimDashboard() {
       {
         label: "Average Lifespan",
         data: deferredHistory.map((point) => point.average_lifespan),
-        borderColor: "#fafafa",
-        borderWidth: 2,
+        borderColor: "#f0f0fa",
+        borderWidth: 1.5,
         pointRadius: 0,
         tension: 0.18,
       },
       {
         label: "Max Fitness",
         data: deferredHistory.map((point) => point.max_fitness),
-        borderColor: "#a3a3a3",
-        borderWidth: 2,
+        borderColor: "rgba(240,240,250,0.55)",
+        borderWidth: 1.5,
         pointRadius: 0,
         tension: 0.18,
       },
       {
         label: "Brain Complexity",
         data: deferredHistory.map((point) => point.average_brain_complexity),
-        borderColor: "#525252",
-        borderWidth: 2,
+        borderColor: "rgba(240,240,250,0.25)",
+        borderWidth: 1.5,
         pointRadius: 0,
         tension: 0.18,
       },
@@ -445,31 +445,36 @@ export function NeuroSimDashboard() {
     plugins: {
       legend: {
         labels: {
-          color: "#d4d4d8",
+          color: "rgba(240,240,250,0.7)",
+          font: { family: "Barlow, D-DIN, Arial", size: 11 },
         },
       },
       tooltip: {
-        backgroundColor: "#0a0a0a",
-        titleColor: "#fafafa",
-        bodyColor: "#d4d4d8",
+        backgroundColor: "#000000",
+        titleColor: "#f0f0fa",
+        bodyColor: "rgba(240,240,250,0.7)",
+        borderColor: "rgba(240,240,250,0.2)",
+        borderWidth: 1,
       },
     },
     scales: {
       x: {
         ticks: {
-          color: "#737373",
+          color: "rgba(240,240,250,0.35)",
           maxTicksLimit: 8,
+          font: { family: "Barlow, D-DIN, Arial", size: 10 },
         },
         grid: {
-          color: "rgba(64, 64, 64, 0.4)",
+          color: "rgba(240,240,250,0.06)",
         },
       },
       y: {
         ticks: {
-          color: "#737373",
+          color: "rgba(240,240,250,0.35)",
+          font: { family: "Barlow, D-DIN, Arial", size: 10 },
         },
         grid: {
-          color: "rgba(64, 64, 64, 0.4)",
+          color: "rgba(240,240,250,0.06)",
         },
       },
     },
@@ -480,7 +485,7 @@ export function NeuroSimDashboard() {
   };
 
   return (
-    <main className="h-screen w-screen overflow-hidden bg-neutral-950 text-neutral-100">
+    <main className="h-screen w-screen overflow-hidden bg-black text-[#f0f0fa]">
       <div className="relative h-full w-full">
         <SimulationViewport
           frameRef={latestFrameRef}
@@ -490,26 +495,29 @@ export function NeuroSimDashboard() {
         />
 
         <Toolbar className="left-1/2 top-4 -translate-x-1/2">
-          <ToolbarButton
+          <GhostButton
             label={panels.controls ? "Hide Controls" : "Show Controls"}
             onClick={() => togglePanel("controls")}
+            active={panels.controls}
           />
-          <ToolbarButton
+          <GhostButton
             label={panels.analytics ? "Hide Analytics" : "Show Analytics"}
             onClick={() => togglePanel("analytics")}
+            active={panels.analytics}
           />
-          <ToolbarButton
+          <GhostButton
             label={panels.sessions ? "Hide Sessions" : "Show Sessions"}
             onClick={() => togglePanel("sessions")}
+            active={panels.sessions}
           />
-          <ToolbarButton
+          <GhostButton
             label="Reset View"
             onClick={() => setCameraResetVersion((value) => value + 1)}
           />
         </Toolbar>
 
         <OverlayPanel className="left-4 top-4 w-[320px]">
-          <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
+          <p className="text-[10px] uppercase tracking-[1px] text-[rgba(240,240,250,0.4)] leading-[0.94]">
             Live Session
           </p>
           <div className="mt-4 grid grid-cols-2 gap-3">
@@ -520,13 +528,15 @@ export function NeuroSimDashboard() {
             <Stat label="Fitness" value={overlayStats.topFitness.toFixed(1)} />
             <Stat label="Complexity" value={overlayStats.averageComplexity.toFixed(1)} />
           </div>
-          <div className="mt-4 flex items-center justify-between text-xs uppercase tracking-[0.28em] text-neutral-400">
+          <div className="mt-4 flex items-center justify-between text-[10px] uppercase tracking-[1px] text-[rgba(240,240,250,0.35)]">
             <span>{connectionState === "live" ? "streaming" : connectionState}</span>
             <span>{status?.session.replaying ? "replay mode" : "live mode"}</span>
           </div>
-          <p className="mt-3 text-sm text-neutral-400">{actionMessage}</p>
-          <p className="mt-3 text-xs text-neutral-600">
-            Drag to orbit. Right-drag to pan. Mouse wheel to zoom.
+          <p className="mt-3 text-[12px] uppercase tracking-[0.5px] text-[rgba(240,240,250,0.5)]">
+            {actionMessage}
+          </p>
+          <p className="mt-3 text-[10px] uppercase tracking-[0.5px] text-[rgba(240,240,250,0.2)]">
+            Drag to orbit. Right-drag to pan. Scroll to zoom.
           </p>
         </OverlayPanel>
 
@@ -534,12 +544,14 @@ export function NeuroSimDashboard() {
           <OverlayPanel className="right-4 top-4 w-[380px]">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
+                <p className="text-[10px] uppercase tracking-[1px] text-[rgba(240,240,250,0.4)] leading-[0.94]">
                   Configuration
                 </p>
-                <h2 className="mt-2 text-2xl font-medium text-white">Run Controls</h2>
+                <h2 className="mt-2 text-[28px] font-bold uppercase tracking-[0.96px] text-[#f0f0fa] leading-[1]">
+                  Run Controls
+                </h2>
               </div>
-              <div className="rounded border border-neutral-800 px-3 py-2 text-[11px] uppercase tracking-[0.24em] text-neutral-400">
+              <div className="border border-[rgba(240,240,250,0.2)] px-3 py-2 text-[10px] uppercase tracking-[1px] text-[rgba(240,240,250,0.4)]">
                 Seed {status?.session.seed ?? 7}
               </div>
             </div>
@@ -582,7 +594,9 @@ export function NeuroSimDashboard() {
                 }
               />
               <label className="block">
-                <div className="mb-2 text-sm text-neutral-300">Offline Session Name</div>
+                <div className="mb-2 text-[11px] uppercase tracking-[0.96px] text-[rgba(240,240,250,0.5)]">
+                  Offline Session Name
+                </div>
                 <input
                   type="text"
                   value={form.sessionName}
@@ -590,20 +604,19 @@ export function NeuroSimDashboard() {
                     setForm((current) => ({ ...current, sessionName: event.target.value }))
                   }
                   placeholder="e.g. bottleneck-test-01"
-                  className="w-full rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600"
+                  className="w-full border-b border-[rgba(240,240,250,0.2)] bg-transparent px-0 py-2 text-[12px] uppercase tracking-[0.5px] text-[#f0f0fa] outline-none placeholder:text-[rgba(240,240,250,0.2)] focus:border-[rgba(240,240,250,0.5)]"
                 />
               </label>
-              <div className="rounded border border-neutral-800 bg-neutral-950 px-4 py-3 text-sm text-neutral-400">
-                Apply changes to the running simulation. Save Session stores enough information to
-                reconstruct this run offline later.
-              </div>
+              <p className="text-[11px] uppercase tracking-[0.5px] text-[rgba(240,240,250,0.3)]">
+                Apply changes to the running simulation. Save session stores data for offline replay.
+              </p>
             </div>
 
             <div className="mt-5 grid grid-cols-2 gap-3">
-              <ActionButton label="Apply Changes" onClick={applyConfig} disabled={isBusy} />
-              <ActionButton label="God Mode" onClick={triggerGodMode} disabled={isBusy} />
-              <ActionButton label="Save Session" onClick={saveRecording} disabled={isBusy} />
-              <ActionButton
+              <GhostButton label="Apply Changes" onClick={applyConfig} disabled={isBusy} />
+              <GhostButton label="God Mode" onClick={triggerGodMode} disabled={isBusy} />
+              <GhostButton label="Save Session" onClick={saveRecording} disabled={isBusy} />
+              <GhostButton
                 label={status?.session.recording_dirty ? "Unsaved Changes" : "Session Saved"}
                 onClick={saveRecording}
                 disabled={isBusy || !status?.session.recording_dirty}
@@ -616,18 +629,20 @@ export function NeuroSimDashboard() {
           <OverlayPanel className="bottom-4 right-4 h-[420px] w-[760px] max-w-[calc(100vw-2rem)]">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
+                <p className="text-[10px] uppercase tracking-[1px] text-[rgba(240,240,250,0.4)] leading-[0.94]">
                   Analytics
                 </p>
-                <h2 className="mt-2 text-2xl font-medium text-white">Explore The Run</h2>
+                <h2 className="mt-2 text-[28px] font-bold uppercase tracking-[0.96px] text-[#f0f0fa] leading-[1]">
+                  Explore The Run
+                </h2>
               </div>
               <div className="flex gap-2">
-                <ToolbarButton
+                <GhostButton
                   label="Live Graph"
                   onClick={() => setAnalyticsMode("live")}
                   active={analyticsMode === "live"}
                 />
-                <ToolbarButton
+                <GhostButton
                   label="Generation History"
                   onClick={() => setAnalyticsMode("generations")}
                   active={analyticsMode === "generations"}
@@ -636,17 +651,19 @@ export function NeuroSimDashboard() {
             </div>
 
             <div className="mt-4 grid h-[320px] gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
-              <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
+              <div className="border border-[rgba(240,240,250,0.1)] bg-black/40 p-3">
                 <Line
                   data={analyticsMode === "live" ? liveChartData : generationChartData}
                   options={chartOptions}
                 />
               </div>
-              <div className="rounded border border-neutral-800 bg-neutral-950 p-4">
+              <div className="border border-[rgba(240,240,250,0.1)] bg-black/40 p-4">
                 {analyticsMode === "live" ? (
                   <>
-                    <div className="text-sm text-white">Live Window</div>
-                    <div className="mt-3 space-y-3 text-sm text-neutral-400">
+                    <div className="text-[11px] font-bold uppercase tracking-[1.17px] text-[#f0f0fa]">
+                      Live Window
+                    </div>
+                    <div className="mt-3 space-y-3">
                       <MetricRow
                         label="Current alive"
                         value={overlayStats.agentCount.toLocaleString()}
@@ -668,15 +685,19 @@ export function NeuroSimDashboard() {
                   </>
                 ) : (
                   <>
-                    <div className="text-sm text-white">Recent Generations</div>
+                    <div className="text-[11px] font-bold uppercase tracking-[1.17px] text-[#f0f0fa]">
+                      Recent Generations
+                    </div>
                     <div className="mt-3 max-h-[250px] space-y-2 overflow-auto pr-1">
                       {deferredHistory.slice(-10).reverse().map((entry) => (
                         <div
                           key={entry.generation}
-                          className="rounded border border-neutral-800 px-3 py-2 text-sm text-neutral-400"
+                          className="border-b border-[rgba(240,240,250,0.1)] pb-2"
                         >
-                          <div className="text-white">Generation {entry.generation}</div>
-                          <div className="mt-1 text-xs">
+                          <div className="text-[11px] font-bold uppercase tracking-[1.17px] text-[#f0f0fa]">
+                            Generation {entry.generation}
+                          </div>
+                          <div className="mt-1 text-[10px] uppercase tracking-[0.5px] text-[rgba(240,240,250,0.4)]">
                             Lifespan {entry.average_lifespan.toFixed(1)} / Fitness{" "}
                             {entry.max_fitness.toFixed(1)} / Complexity{" "}
                             {entry.average_brain_complexity.toFixed(1)}
@@ -695,36 +716,42 @@ export function NeuroSimDashboard() {
           <OverlayPanel className="bottom-4 left-4 w-[440px] max-w-[calc(100vw-2rem)]">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-neutral-500">
+                <p className="text-[10px] uppercase tracking-[1px] text-[rgba(240,240,250,0.4)] leading-[0.94]">
                   Offline Replay
                 </p>
-                <h2 className="mt-2 text-2xl font-medium text-white">Saved Sessions</h2>
+                <h2 className="mt-2 text-[28px] font-bold uppercase tracking-[0.96px] text-[#f0f0fa] leading-[1]">
+                  Saved Sessions
+                </h2>
               </div>
-              <span className="text-sm text-neutral-500">{recordings.length} stored</span>
+              <span className="text-[10px] uppercase tracking-[1px] text-[rgba(240,240,250,0.35)]">
+                {recordings.length} stored
+              </span>
             </div>
 
             <div className="mt-4 max-h-[260px] space-y-2 overflow-auto pr-1">
               {recordings.length === 0 ? (
-                <div className="rounded border border-neutral-800 bg-neutral-950 px-4 py-4 text-sm text-neutral-500">
+                <p className="text-[11px] uppercase tracking-[0.5px] text-[rgba(240,240,250,0.3)]">
                   Save the current run, then replay it later from here.
-                </div>
+                </p>
               ) : (
                 recordings.map((recording) => (
                   <button
                     key={recording.id}
                     type="button"
                     onClick={() => replayRecording(recording.id)}
-                    className="w-full rounded border border-neutral-800 bg-neutral-950 px-4 py-3 text-left transition hover:border-neutral-600"
+                    className="w-full border border-[rgba(240,240,250,0.15)] bg-[rgba(240,240,250,0.04)] px-4 py-3 text-left transition hover:border-[rgba(240,240,250,0.35)] hover:bg-[rgba(240,240,250,0.08)] disabled:opacity-40"
                     disabled={isBusy}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className="text-sm font-medium text-white">{recording.name}</div>
-                        <div className="mt-1 text-xs text-neutral-500">
+                        <div className="text-[11px] font-bold uppercase tracking-[1.17px] text-[#f0f0fa]">
+                          {recording.name}
+                        </div>
+                        <div className="mt-1 text-[10px] uppercase tracking-[0.5px] text-[rgba(240,240,250,0.4)]">
                           Gen {recording.final_generation}, Tick {recording.final_tick}
                         </div>
                       </div>
-                      <div className="text-right text-xs text-neutral-500">
+                      <div className="text-right text-[10px] uppercase tracking-[0.5px] text-[rgba(240,240,250,0.35)]">
                         <div>{recording.population_size.toLocaleString()} agents</div>
                         <div>{new Date(recording.saved_at_ms).toLocaleString()}</div>
                       </div>
@@ -753,7 +780,7 @@ function SimulationViewport({
 }) {
   return (
     <Canvas camera={{ position: [0, 320, 320], fov: 48 }}>
-      <color attach="background" args={["#0a0a0a"]} />
+      <color attach="background" args={["#000000"]} />
       <ambientLight intensity={0.55} />
       <directionalLight position={[80, 180, 90]} intensity={1.0} color="#ffffff" />
       <SceneControls resetVersion={resetVersion} />
@@ -761,7 +788,7 @@ function SimulationViewport({
         <mesh position={[0, -4, 0]} rotation={[-Math.PI / 2, 0, 0]}>
           <planeGeometry args={[860, 860, 1, 1]} />
           <meshStandardMaterial
-            color={halted ? "#141414" : "#111111"}
+            color={halted ? "#0a0a0a" : "#070707"}
             roughness={1}
             metalness={0}
           />
@@ -865,7 +892,6 @@ function ArenaInstancing({
       agentTarget.setMatrixAt(index, agentDummy.current.matrix);
 
       if (clusterId > 0) {
-        // Simple color mapping for clusters
         const hue = (clusterId * 137.5) % 360;
         agentColor.current.setHSL(hue / 360, 0.8, 0.5 + energyRatio * 0.2);
       } else {
@@ -918,12 +944,12 @@ function ArenaInstancing({
 
       <instancedMesh ref={foodMesh} args={[undefined, undefined, MAX_RENDERED_POINTS]}>
         <sphereGeometry args={[0.95, 6, 6]} />
-        <meshBasicMaterial color="#d4d4d8" />
+        <meshBasicMaterial color="#f0f0fa" />
       </instancedMesh>
 
       <instancedMesh ref={poisonMesh} args={[undefined, undefined, MAX_RENDERED_POINTS]}>
         <sphereGeometry args={[0.85, 6, 6]} />
-        <meshBasicMaterial color="#525252" />
+        <meshBasicMaterial color="rgba(240,240,250,0.25)" />
       </instancedMesh>
     </>
   );
@@ -938,31 +964,55 @@ function Toolbar({
 }) {
   return (
     <div
-      className={`absolute z-20 flex gap-2 rounded border border-neutral-800 bg-neutral-900/92 p-2 shadow-2xl backdrop-blur ${className ?? ""}`}
+      className={`absolute z-20 flex gap-2 p-2 ${className ?? ""}`}
+      style={{
+        background: "rgba(0,0,0,0.5)",
+        border: "1px solid rgba(240,240,250,0.15)",
+        backdropFilter: "blur(4px)",
+      }}
     >
       {children}
     </div>
   );
 }
 
-function ToolbarButton({
+function GhostButton({
   label,
   onClick,
   active = false,
+  disabled = false,
 }: {
   label: string;
   onClick: () => void;
   active?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`rounded border px-3 py-2 text-sm transition ${
-        active
-          ? "border-neutral-500 bg-neutral-700 text-white"
-          : "border-neutral-800 bg-neutral-950 text-neutral-300 hover:border-neutral-600"
-      }`}
+      disabled={disabled}
+      className="rounded-[32px] px-[18px] py-2 text-[13px] font-bold uppercase tracking-[1.17px] text-[#f0f0fa] transition disabled:cursor-not-allowed disabled:opacity-30"
+      style={{
+        background: active ? "rgba(240,240,250,0.2)" : "rgba(240,240,250,0.1)",
+        border: active
+          ? "1px solid rgba(240,240,250,0.55)"
+          : "1px solid rgba(240,240,250,0.35)",
+      }}
+      onMouseEnter={(e) => {
+        if (!disabled) {
+          (e.currentTarget as HTMLButtonElement).style.background = "rgba(240,240,250,0.18)";
+          (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(240,240,250,0.55)";
+        }
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.background = active
+          ? "rgba(240,240,250,0.2)"
+          : "rgba(240,240,250,0.1)";
+        (e.currentTarget as HTMLButtonElement).style.borderColor = active
+          ? "rgba(240,240,250,0.55)"
+          : "rgba(240,240,250,0.35)";
+      }}
     >
       {label}
     </button>
@@ -978,7 +1028,12 @@ function OverlayPanel({
 }) {
   return (
     <section
-      className={`absolute rounded border border-neutral-800 bg-neutral-900/92 p-4 shadow-2xl backdrop-blur ${className}`}
+      className={`absolute p-4 ${className}`}
+      style={{
+        background: "rgba(0,0,0,0.6)",
+        border: "1px solid rgba(240,240,250,0.12)",
+        backdropFilter: "blur(3px)",
+      }}
     >
       {children}
     </section>
@@ -987,11 +1042,13 @@ function OverlayPanel({
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded border border-neutral-800 bg-neutral-950 px-3 py-2">
-      <div className="font-mono text-[11px] uppercase tracking-[0.24em] text-neutral-500">
+    <div>
+      <div className="text-[10px] uppercase tracking-[1px] text-[rgba(240,240,250,0.4)] leading-[0.94]">
         {label}
       </div>
-      <div className="mt-2 text-lg text-white">{value}</div>
+      <div className="mt-2 text-[18px] font-bold uppercase tracking-[0.96px] text-[#f0f0fa] leading-[1]">
+        {value}
+      </div>
     </div>
   );
 }
@@ -1013,9 +1070,11 @@ function RangeField({
 }) {
   return (
     <label className="block">
-      <div className="mb-2 flex items-center justify-between text-sm">
-        <span className="text-neutral-300">{label}</span>
-        <span className="font-mono text-xs text-neutral-500">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-[11px] uppercase tracking-[0.96px] text-[rgba(240,240,250,0.6)]">
+          {label}
+        </span>
+        <span className="font-mono text-[11px] text-[rgba(240,240,250,0.4)]">
           {value}
           {unit}
         </span>
@@ -1026,7 +1085,7 @@ function RangeField({
         max={max}
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
-        className="h-2 w-full cursor-pointer appearance-none rounded bg-neutral-800 accent-white"
+        className="h-[1px] w-full cursor-pointer appearance-none bg-[rgba(240,240,250,0.2)] accent-[#f0f0fa]"
       />
     </label>
   );
@@ -1049,7 +1108,9 @@ function NumberField({
 }) {
   return (
     <label className="block">
-      <div className="mb-2 text-sm text-neutral-300">{label}</div>
+      <div className="mb-2 text-[11px] uppercase tracking-[0.96px] text-[rgba(240,240,250,0.6)]">
+        {label}
+      </div>
       <input
         type="number"
         min={min}
@@ -1057,38 +1118,21 @@ function NumberField({
         step={step}
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
-        className="w-full rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-white outline-none"
+        className="w-full border-b border-[rgba(240,240,250,0.2)] bg-transparent px-0 py-2 text-[12px] uppercase tracking-[0.5px] text-[#f0f0fa] outline-none focus:border-[rgba(240,240,250,0.5)]"
       />
     </label>
-  );
-}
-
-function ActionButton({
-  label,
-  onClick,
-  disabled,
-}: {
-  label: string;
-  onClick: () => void;
-  disabled: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className="rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-white transition hover:border-neutral-500 disabled:cursor-not-allowed disabled:text-neutral-600"
-    >
-      {label}
-    </button>
   );
 }
 
 function MetricRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <span>{label}</span>
-      <span className="text-white">{value}</span>
+      <span className="text-[10px] uppercase tracking-[0.5px] text-[rgba(240,240,250,0.4)]">
+        {label}
+      </span>
+      <span className="text-[11px] font-bold uppercase tracking-[0.96px] text-[#f0f0fa]">
+        {value}
+      </span>
     </div>
   );
 }

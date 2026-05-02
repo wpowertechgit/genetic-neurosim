@@ -15,7 +15,15 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="bg-slate-950 text-white antialiased">{children}</body>
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;700&display=swap"
+          rel="stylesheet"
+        />
+      </head>
+      <body className="bg-black text-[#f0f0fa] antialiased">{children}</body>
     </html>
   );
 }

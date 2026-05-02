@@ -9,12 +9,13 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        display: ["'Space Grotesk'", "sans-serif"],
-        body: ["'IBM Plex Sans'", "sans-serif"],
+        display: ["'Barlow'", "'D-DIN-Bold'", "Arial", "Verdana", "sans-serif"],
+        body: ["'Barlow'", "'D-DIN'", "Arial", "Verdana", "sans-serif"],
         mono: ["'IBM Plex Mono'", "monospace"],
       },
-      boxShadow: {
-        panel: "0 24px 80px rgba(2, 6, 23, 0.32)",
+      colors: {
+        "space-black": "#000000",
+        "spectral": "#f0f0fa",
       },
     },
   },
